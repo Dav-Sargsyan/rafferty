@@ -90,7 +90,13 @@ public sealed record StrategyScore(
     double AverageLatencyMs,
     double PacketLoss,
     int Errors,
-    TimeSpan StartupTime);
+    TimeSpan StartupTime,
+    ServiceReachability YouTube = ServiceReachability.NotTested,
+    ServiceReachability Discord = ServiceReachability.NotTested,
+    ServiceReachability Voice = ServiceReachability.NotTested,
+    bool EngineStarted = true,
+    bool DriverActive = true,
+    string? FailureReason = null);
 
 public sealed record OptimizationResult(
     bool Success,
@@ -108,5 +114,11 @@ public sealed record UserSettings(
     bool AdvancedMode = false,
     string Theme = "Dark",
     bool StartEnabled = false,
-    string Language = "ru-RU");
+    string Language = "ru-RU",
+    bool ManualMode = false,
+    string ManualStrategyId = "general",
+    bool MinimizeToTray = true,
+    bool CheckYouTube = true,
+    bool CheckDiscord = true,
+    bool CheckVoice = true);
 

@@ -59,7 +59,9 @@ public sealed class ConnectivityTester : IDisposable
 
         return new ReachabilitySnapshot(
             State("internet", "dns"),
-            State("youtube", "googlevideo", "youtube-quic"),
+            // QUIC is reported separately because HTTP/3 can be unavailable while
+            // ordinary YouTube playback over HTTPS is fully functional.
+            State("youtube", "googlevideo"),
             State("discord-api", "discord-cdn", "discord-gateway"),
             State("discord-stun"),
             DateTimeOffset.Now);

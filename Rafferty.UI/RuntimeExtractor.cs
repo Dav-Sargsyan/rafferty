@@ -33,6 +33,11 @@ internal static class RuntimeExtractor
                 throw new InvalidDataException("Unsafe embedded runtime path.");
             }
 
+            if (IsUserManagedList(relative) && File.Exists(destination) && new FileInfo(destination).Length > 0)
+            {
+                continue;
+            }
+
             await using var resource = assembly.GetManifestResourceStream(resourceName)
                 ?? throw new InvalidDataException($"Embedded resource is missing: {resourceName}");
             using var memory = new MemoryStream();
@@ -71,4 +76,7 @@ internal static class RuntimeExtractor
         var path = Path.Combine(AppPaths.ListsDirectory, name);
         if (!File.Exists(path) || new FileInfo(path).Length == 0) File.WriteAllText(path, defaultContent);
     }
+
+    private static bool IsUserManagedList(string relative) => relative.Replace('\\', '/').ToLowerInvariant() is
+        "lists/ipset-exclude-user.txt" or "lists/list-general-user.txt" or "lists/list-exclude-user.txt";
 }

@@ -1,10 +1,12 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
+using Rafferty.Core;
 using Rafferty.Shared;
 using Forms = System.Windows.Forms;
 using WpfBrush = System.Windows.Media.Brush;
@@ -14,6 +16,8 @@ namespace Rafferty.UI;
 
 public partial class MainWindow : Window
 {
+    private enum AppPage { Dashboard, Settings, Advanced }
+
     private static readonly WpfBrush IdleBrush = new SolidColorBrush(WpfColor.FromRgb(75, 80, 96));
     private static readonly WpfBrush SuccessBrush = new SolidColorBrush(WpfColor.FromRgb(99, 230, 177));
     private static readonly WpfBrush WarningBrush = new SolidColorBrush(WpfColor.FromRgb(244, 200, 106));
@@ -28,6 +32,8 @@ public partial class MainWindow : Window
     private EngineSnapshot? _status;
     private bool _exitRequested;
     private bool _loadingSettings;
+    private IReadOnlyList<Strategy> _strategies = [];
+    private AppPage _currentPage = AppPage.Dashboard;
 
     internal MainWindow(RaffertyController controller, SettingsService settingsService, UserSettings settings)
     {
@@ -37,27 +43,49 @@ public partial class MainWindow : Window
         InitializeComponent();
         ApplySettingsToControls();
         _tray = CreateTrayIcon();
-        Loaded += (_, _) => UpdateStatus(_controller.Status);
+        Loaded += async (_, _) =>
+        {
+            await LoadStrategiesAsync();
+            UpdateStatus(_controller.Status);
+        };
     }
 
     internal async Task StartEnabledAsync()
     {
-        if (_status?.EngineRunning != true) await ToggleAsync();
+        if (_status?.EngineRunning == true) return;
+        if (_settings.ManualMode)
+        {
+            await ApplySelectedStrategyAsync(_settings.ManualStrategyId);
+        }
+        else
+        {
+            await ToggleAsync();
+        }
     }
 
     internal async Task RenderPagesForTestAsync(string directory, string? language = null)
     {
         if (language is not null) await ChangeLanguageAsync(language);
+        if (_strategies.Count == 0) await LoadStrategiesAsync();
         Directory.CreateDirectory(directory);
         UpdateLayout();
         RenderWindow(Path.Combine(directory, "dashboard-initial.png"));
         await TestLatencyAsync();
         UpdateLayout();
         RenderWindow(Path.Combine(directory, "dashboard-latency.png"));
+        _settings = _settings with { ManualMode = true };
+        ApplySettingsToControls();
         ShowSettings();
         await Task.Delay(240);
         UpdateLayout();
         RenderWindow(Path.Combine(directory, "settings.png"));
+        Navigate(AppPage.Advanced);
+        var previewStrategy = SelectedStrategyId() ?? _settings.ManualStrategyId;
+        AdvancedStrategyText.Text = StrategyNames.DisplayName(previewStrategy);
+        CommandLineText.Text = await _controller.GetCommandLineAsync(previewStrategy, _lifetime.Token);
+        await Task.Delay(240);
+        UpdateLayout();
+        RenderWindow(Path.Combine(directory, "advanced.png"));
         var diagnostics = new DiagnosticsWindow(Localization.T("Diagnostics"), Localization.T("DiagnosticsDescription"), "Internet: Success — HTTP 204\nYouTube: Success — TCP 443\nDiscord API: Success — HTTP 200\nDiscord Voice / STUN: Success — UDP response received") { Owner = this };
         diagnostics.Show();
         diagnostics.RenderForTest(Path.Combine(directory, "diagnostics.png"));
@@ -122,7 +150,14 @@ public partial class MainWindow : Window
             else
             {
                 SetCheckingState();
-                status = await _controller.EnableAsync(new Progress<string>(message => ActivityText.Text = LocalizeProgress(message)), _lifetime.Token);
+                status = _settings.ManualMode
+                    ? await _controller.ApplyStrategyAsync(_settings.ManualStrategyId, _lifetime.Token)
+                    : await _controller.EnableAsync(
+                        new Progress<string>(message => ActivityText.Text = LocalizeProgress(message)),
+                        _lifetime.Token,
+                        _settings.CheckYouTube,
+                        _settings.CheckDiscord,
+                        _settings.CheckVoice);
                 ActivityText.Text = Localization.T("ConnectionOptimized");
                 if (_settings.Notifications && status.DriverActive && status.StrategyApplied && status.ConnectivityVerified)
                     _tray.ShowBalloonTip(1200, Localization.T("AppName"), Localization.T("ConnectionProtected"), Forms.ToolTipIcon.Info);
@@ -147,14 +182,34 @@ public partial class MainWindow : Window
         SetCheckingState();
         try
         {
-            var status = await _controller.ReoptimizeAsync(new Progress<string>(message => ActivityText.Text = LocalizeProgress(message)), _lifetime.Token);
+            var status = await _controller.ReoptimizeAsync(
+                new Progress<string>(message => ActivityText.Text = LocalizeProgress(message)),
+                _lifetime.Token,
+                _settings.CheckYouTube,
+                _settings.CheckDiscord,
+                _settings.CheckVoice);
             ActivityText.Text = Localization.T("ConnectionOptimized");
             UpdateStatus(status);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             ActivityText.Text = exception.Message;
-            System.Windows.MessageBox.Show(this, exception.Message, Localization.T("AppName"), MessageBoxButton.OK, MessageBoxImage.Warning);
+            var best = _controller.LastOptimization;
+            if (best is { Success: false, SelectedStrategyId: not null })
+            {
+                var choice = System.Windows.MessageBox.Show(this,
+                    $"{exception.Message}\n\nBest result: {StrategyNames.DisplayName(best.SelectedStrategyId)}\n\nApply this strategy manually?",
+                    Localization.T("AppName"), MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (choice == MessageBoxResult.Yes)
+                {
+                    await ApplySelectedStrategyAsync(best.SelectedStrategyId);
+                    return;
+                }
+            }
+            else
+            {
+                System.Windows.MessageBox.Show(this, exception.Message, Localization.T("AppName"), MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
         }
         finally { SetBusy(false, ActivityText.Text); }
     }
@@ -211,10 +266,12 @@ public partial class MainWindow : Window
         target.ToolTip = null;
     }
 
-    private static string LocalizeProgress(string message) =>
-        Localization.T(message.StartsWith("Checking saved", StringComparison.OrdinalIgnoreCase)
-            ? "CheckingSavedConfiguration"
-            : "FindingConfiguration");
+    private static string LocalizeProgress(string message)
+    {
+        if (message.StartsWith("Checking saved", StringComparison.OrdinalIgnoreCase)) return Localization.T("CheckingSavedConfiguration");
+        if (message.StartsWith("Finding", StringComparison.OrdinalIgnoreCase)) return Localization.T("FindingConfiguration");
+        return message;
+    }
 
     private void UpdateStatus(EngineSnapshot status)
     {
@@ -228,9 +285,15 @@ public partial class MainWindow : Window
         PowerButton.Content = Localization.T(active ? "Disable" : "Enable");
         PowerButton.Background = active ? new SolidColorBrush(WpfColor.FromRgb(36, 74, 67)) : new SolidColorBrush(WpfColor.FromRgb(23, 26, 37));
         PowerButton.BorderBrush = active ? SuccessBrush : new SolidColorBrush(WpfColor.FromRgb(81, 71, 154));
-        StrategyText.Text = active ? status.StrategyId ?? Localization.T("AutomaticProfile") : Localization.T("AutoConfiguration");
-        SettingsProfileText.Text = string.Format(Localization.T("CurrentProfile"), status.StrategyId ?? Localization.T("None"));
-        RuntimeDetail.Text = active ? string.Format(Localization.T("EngineActive"), status.StrategyId, status.ProcessId) : status.LastError ?? Localization.T("EngineStopped");
+        StrategyText.Text = StrategyNames.DisplayName(status.StrategyId ?? _settings.ManualStrategyId);
+        ModeText.Text = Localization.T(_settings.ManualMode ? "ManualMode" : "AutomaticMode");
+        AdvancedStrategyText.Text = StrategyNames.DisplayName(status.StrategyId ?? SelectedStrategyId() ?? _settings.ManualStrategyId);
+        AdvancedEngineText.Text = active ? "Running" : "Stopped";
+        AdvancedDriverText.Text = status.DriverActive ? "Loaded" : "Not loaded";
+        AdvancedPidText.Text = status.ProcessId?.ToString() ?? "—";
+        AdvancedWorkingDirectoryText.Text = _controller.EngineWorkingDirectory;
+        AdvancedRuntimeText.Text = _controller.RuntimeDirectory;
+        CommandLineText.Text = status.CommandLine ?? string.Empty;
         SetReachability(YoutubeState, YoutubeDot, status.Reachability.YouTube);
         SetReachability(DiscordState, DiscordDot, status.Reachability.Discord);
         SetReachability(VoiceState, VoiceDot, status.Reachability.DiscordVoice);
@@ -256,8 +319,13 @@ public partial class MainWindow : Window
         _loadingSettings = true;
         StartWithWindowsToggle.IsChecked = _settings.StartWithWindows;
         StartEnabledToggle.IsChecked = _settings.StartEnabled;
-        AutoOptimizationToggle.IsChecked = _settings.AutoOptimizeOnNewNetwork;
+        MinimizeToTrayToggle.IsChecked = _settings.MinimizeToTray;
         NotificationsToggle.IsChecked = _settings.Notifications;
+        CheckYouTubeBox.IsChecked = _settings.CheckYouTube;
+        CheckDiscordBox.IsChecked = _settings.CheckDiscord;
+        CheckVoiceBox.IsChecked = _settings.CheckVoice;
+        ModeSelector.SelectedIndex = _settings.ManualMode ? 1 : 0;
+        ManualStrategyPanel.Visibility = _settings.ManualMode ? Visibility.Visible : Visibility.Collapsed;
         LanguageSelector.SelectedIndex = Localization.Normalize(_settings.Language) == Localization.EnglishLanguage ? 1 : 0;
         _loadingSettings = false;
     }
@@ -269,8 +337,13 @@ public partial class MainWindow : Window
         {
             StartWithWindows = StartWithWindowsToggle.IsChecked == true,
             StartEnabled = StartEnabledToggle.IsChecked == true,
-            AutoOptimizeOnNewNetwork = AutoOptimizationToggle.IsChecked == true,
-            Notifications = NotificationsToggle.IsChecked == true
+            MinimizeToTray = MinimizeToTrayToggle.IsChecked == true,
+            Notifications = NotificationsToggle.IsChecked == true,
+            ManualMode = ModeSelector.SelectedIndex == 1,
+            ManualStrategyId = SelectedStrategyId() ?? _settings.ManualStrategyId,
+            CheckYouTube = CheckYouTubeBox.IsChecked == true,
+            CheckDiscord = CheckDiscordBox.IsChecked == true,
+            CheckVoice = CheckVoiceBox.IsChecked == true
         };
         try { await _settingsService.SaveAsync(_settings, _lifetime.Token); }
         catch (Exception exception)
@@ -279,6 +352,66 @@ public partial class MainWindow : Window
             ApplySettingsToControls();
             System.Windows.MessageBox.Show(this, exception.Message, Localization.T("SettingsErrorTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    private async Task LoadStrategiesAsync(bool reload = false)
+    {
+        _strategies = reload
+            ? await _controller.ReloadStrategiesAsync(_lifetime.Token)
+            : await _controller.GetStrategiesAsync(_lifetime.Token);
+        _loadingSettings = true;
+        StrategySelector.Items.Clear();
+        foreach (var strategy in _strategies)
+        {
+            StrategySelector.Items.Add(new ComboBoxItem
+            {
+                Tag = strategy.Id,
+                Content = StrategyNames.DisplayName(strategy)
+            });
+        }
+        var selectedIndex = _strategies.ToList().FindIndex(strategy =>
+            string.Equals(strategy.Id, _settings.ManualStrategyId, StringComparison.OrdinalIgnoreCase));
+        StrategySelector.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
+        _loadingSettings = false;
+    }
+
+    private string? SelectedStrategyId() =>
+        StrategySelector.SelectedItem is ComboBoxItem { Tag: string id } ? id : null;
+
+    private async Task ApplySelectedStrategyAsync(string? strategyId = null)
+    {
+        strategyId ??= SelectedStrategyId();
+        if (string.IsNullOrWhiteSpace(strategyId)) return;
+
+        SetBusy(true, $"Applying {StrategyNames.DisplayName(strategyId)}...");
+        try
+        {
+            _settings = _settings with { ManualMode = true, ManualStrategyId = strategyId };
+            ModeSelector.SelectedIndex = 1;
+            ManualStrategyPanel.Visibility = Visibility.Visible;
+            await _settingsService.SaveAsync(_settings, _lifetime.Token);
+            var status = await _controller.ApplyStrategyAsync(strategyId, _lifetime.Token);
+            UpdateStatus(status);
+            ActivityText.Text = $"{StrategyNames.DisplayName(strategyId)}: Engine OK, WinDivert OK";
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            ActivityText.Text = exception.Message;
+            System.Windows.MessageBox.Show(this, exception.Message, Localization.T("SettingsErrorTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
+            UpdateStatus(_controller.Status);
+        }
+        finally
+        {
+            SetBusy(false, ActivityText.Text);
+        }
+    }
+
+    private async void ModeSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingSettings) return;
+        ManualStrategyPanel.Visibility = ModeSelector.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        await SaveSettingsAsync();
+        UpdateStatus(_controller.Status);
     }
 
     private async void LanguageSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -304,8 +437,26 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ShowSettings() => SwitchPage(DashboardPage, SettingsPage, 24);
-    private void ShowDashboard() { if (DashboardPage.Visibility != Visibility.Visible) SwitchPage(SettingsPage, DashboardPage, -24); }
+    private void ShowSettings() => Navigate(AppPage.Settings);
+    private void ShowDashboard() => Navigate(AppPage.Dashboard);
+
+    private void Navigate(AppPage page)
+    {
+        if (page == _currentPage) return;
+        var from = PageGrid(_currentPage);
+        var to = PageGrid(page);
+        var offset = page > _currentPage ? 24 : -24;
+        _currentPage = page;
+        SwitchPage(from, to, offset);
+    }
+
+    private Grid PageGrid(AppPage page) => page switch
+    {
+        AppPage.Dashboard => DashboardPage,
+        AppPage.Settings => SettingsPage,
+        AppPage.Advanced => AdvancedPage,
+        _ => DashboardPage
+    };
 
     private static void SwitchPage(Grid from, Grid to, double offset)
     {
@@ -321,7 +472,7 @@ public partial class MainWindow : Window
         (to.RenderTransform as TranslateTransform)?.BeginAnimation(TranslateTransform.XProperty, slideIn);
     }
 
-    private void SetBusy(bool busy, string message) { PowerButton.IsEnabled = !busy; LatencyButton.IsEnabled = !busy; ActivityProgress.IsIndeterminate = busy; ActivityProgress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed; ActivityText.Text = message; }
+    private void SetBusy(bool busy, string message) { PowerButton.IsEnabled = !busy; LatencyButton.IsEnabled = !busy; ApplyStrategyButton.IsEnabled = !busy; ActivityProgress.IsIndeterminate = busy; ActivityProgress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed; ActivityText.Text = message; }
     private void RestoreWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
 
     private async Task ExitApplicationAsync()
@@ -337,7 +488,7 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(CancelEventArgs e)
     {
-        if (!_exitRequested)
+        if (!_exitRequested && _settings.MinimizeToTray)
         {
             e.Cancel = true;
             Hide();
@@ -378,12 +529,91 @@ public partial class MainWindow : Window
         }
         finally { SetBusy(false, Localization.T("DiagnosticsCompleted")); }
     }
-    private async void ReoptimizeButton_Click(object sender, RoutedEventArgs e) => await ReoptimizeAsync();
+    private async void ReoptimizeButton_Click(object sender, RoutedEventArgs e)
+    {
+        _settings = _settings with { ManualMode = false };
+        _loadingSettings = true;
+        ModeSelector.SelectedIndex = 0;
+        ManualStrategyPanel.Visibility = Visibility.Collapsed;
+        _loadingSettings = false;
+        await _settingsService.SaveAsync(_settings, _lifetime.Token);
+        await ReoptimizeAsync();
+    }
     private async void LatencyButton_Click(object sender, RoutedEventArgs e) => await TestLatencyAsync();
     private void SettingsButton_Click(object sender, RoutedEventArgs e) => ShowSettings();
     private void BackButton_Click(object sender, RoutedEventArgs e) => ShowDashboard();
     private async void SettingToggle_Click(object sender, RoutedEventArgs e) => await SaveSettingsAsync();
-    private void OpenAdvancedButton_Click(object sender, RoutedEventArgs e) => ShowDashboard();
+    private async void OpenAdvancedButton_Click(object sender, RoutedEventArgs e)
+    {
+        Navigate(AppPage.Advanced);
+        if (string.IsNullOrWhiteSpace(CommandLineText.Text))
+        {
+            var strategyId = _controller.Status.StrategyId ?? SelectedStrategyId() ?? _settings.ManualStrategyId;
+            try { CommandLineText.Text = await _controller.GetCommandLineAsync(strategyId, _lifetime.Token); }
+            catch (Exception exception) { CommandLineText.Text = exception.Message; }
+        }
+    }
+    private void AdvancedBackButton_Click(object sender, RoutedEventArgs e) => Navigate(AppPage.Settings);
+    private async void ApplyStrategyButton_Click(object sender, RoutedEventArgs e) => await ApplySelectedStrategyAsync();
+    private void CopyCommandButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!string.IsNullOrWhiteSpace(CommandLineText.Text)) System.Windows.Clipboard.SetText(CommandLineText.Text);
+    }
+    private async void StrategyListButton_Click(object sender, RoutedEventArgs e)
+    {
+        var scores = _controller.LastOptimization?.Scores.ToDictionary(score => score.StrategyId, StringComparer.OrdinalIgnoreCase)
+            ?? new Dictionary<string, StrategyScore>(StringComparer.OrdinalIgnoreCase);
+        var window = new StrategyListWindow(_strategies, scores) { Owner = this };
+        if (window.ShowDialog() == true && !string.IsNullOrWhiteSpace(window.SelectedStrategyId))
+        {
+            await ApplySelectedStrategyAsync(window.SelectedStrategyId);
+        }
+    }
+    private async void ReloadStrategiesButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await LoadStrategiesAsync(true);
+            ActivityText.Text = $"Loaded {_strategies.Count} strategies.";
+        }
+        catch (Exception exception)
+        {
+            System.Windows.MessageBox.Show(this, exception.Message, Localization.T("StrategyList"), MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+    private async void ImportStrategyButton_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = Localization.T("ImportStrategy"),
+            Filter = "Windows batch strategy (*.bat)|*.bat",
+            CheckFileExists = true,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            var imported = await _controller.ImportStrategyAsync(dialog.FileName, _lifetime.Token);
+            await LoadStrategiesAsync();
+            ActivityText.Text = $"Imported {StrategyNames.DisplayName(imported)}.";
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            System.Windows.MessageBox.Show(this, exception.Message, Localization.T("ImportStrategy"), MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+    private void EditCustomDomainsButton_Click(object sender, RoutedEventArgs e) =>
+        OpenTextFile(Path.Combine(AppPaths.ListsDirectory, "list-general-user.txt"));
+    private void EditExcludedDomainsButton_Click(object sender, RoutedEventArgs e) =>
+        OpenTextFile(Path.Combine(AppPaths.ListsDirectory, "list-exclude-user.txt"));
+    private static void OpenTextFile(string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        if (!File.Exists(path)) File.WriteAllText(path, string.Empty);
+        var start = new ProcessStartInfo("notepad.exe") { UseShellExecute = false };
+        start.ArgumentList.Add(path);
+        Process.Start(start);
+    }
     private void AboutButton_Click(object sender, RoutedEventArgs e)
     {
         var notices = Directory.Exists(AppPaths.LicensesDirectory)

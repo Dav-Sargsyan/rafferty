@@ -43,6 +43,16 @@ The prior Rafferty build was not functionally equivalent. It had four hand-writt
 - Engine startup reports `driver=active`, 101 arguments and 9 sections for the selected strategy.
 - Full elevated strategy validation started every imported profile with an active WinDivert driver: 22/22 passed.
 
+## Version 1.2.0 regression validation
+
+- The manual-mode code path launched `general--alt7` with the engine running, WinDivert active and the strategy marked applied.
+- A fresh import of the pinned `general (ALT7).bat` produced 82 arguments and 8 `--new` separators. The bundled `general--alt7` produced the same 82 arguments in the same order: 0 differences.
+- All 12 runtime resources referenced by ALT7 were present; the bundled `winws.exe` SHA-256 was `AFFB4F69D2EA302A7ABCCD5325D81826E140DDAE014F1E070BC4A6C0DD555188`.
+- Manual ALT7 persistence was exercised across two separate application processes. The second process started `general--alt7` directly and passed the smoke test; it did not invoke automatic selection.
+- Automatic optimization completed in 7.2 seconds on the validation machine, tested five real profiles, found three with YouTube, Discord and voice all working, and selected `ALT5` without looping.
+- The selected YouTube/Discord/voice checkboxes now control both scoring and the success criteria; 12 automated tests pass, including persistence of imported BAT strategies in a separate user database.
+- Final elevated startup validation passed for all 22 profiles with an active engine and WinDivert driver.
+
 ## Remaining external validation boundary
 
 This machine is not on a Russian ISP path. No local test can honestly prove success against every deployed Russian DPI profile. The included A/B test and diagnostic export are the required evidence path for the next Russian field test. Until that field result is received, the build should be described as parity-correct and locally validated, not universally proven.

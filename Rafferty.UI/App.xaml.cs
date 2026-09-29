@@ -56,6 +56,51 @@ public partial class App : System.Windows.Application
                 Shutdown(status.EngineRunning && status.DriverActive && status.StrategyApplied && status.ConnectivityVerified ? 0 : 5);
                 return;
             }
+            var manualStrategyIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--manual-strategy", StringComparison.OrdinalIgnoreCase));
+            if (manualStrategyIndex >= 0 && manualStrategyIndex + 2 < e.Args.Length)
+            {
+                var strategyId = e.Args[manualStrategyIndex + 1];
+                var reportPath = Path.GetFullPath(e.Args[manualStrategyIndex + 2]);
+                EngineSnapshot? status = null;
+                IReadOnlyList<DiagnosticResult> diagnostics = [];
+                try
+                {
+                    status = await _controller.ApplyStrategyAsync(strategyId);
+                    diagnostics = await _controller.RunDiagnosticsAsync();
+                    var report = new
+                    {
+                        strategyId,
+                        status.EngineRunning,
+                        status.DriverActive,
+                        status.StrategyApplied,
+                        status.ProcessId,
+                        status.CommandLine,
+                        workingDirectory = _controller.EngineWorkingDirectory,
+                        runtimeDirectory = _controller.RuntimeDirectory,
+                        diagnostics
+                    };
+                    Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+                    await File.WriteAllTextAsync(reportPath, System.Text.Json.JsonSerializer.Serialize(report, JsonDefaults.Options));
+                }
+                finally
+                {
+                    await _controller.DisableAsync();
+                }
+                Shutdown(status is { EngineRunning: true, DriverActive: true, StrategyApplied: true } ? 0 : 6);
+                return;
+            }
+            var autoOptimizeIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--auto-optimize", StringComparison.OrdinalIgnoreCase));
+            if (autoOptimizeIndex >= 0 && autoOptimizeIndex + 1 < e.Args.Length)
+            {
+                var reportPath = Path.GetFullPath(e.Args[autoOptimizeIndex + 1]);
+                var status = await _controller.ReoptimizeAsync();
+                var report = new { status, optimization = _controller.LastOptimization };
+                Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+                await File.WriteAllTextAsync(reportPath, System.Text.Json.JsonSerializer.Serialize(report, JsonDefaults.Options));
+                await _controller.DisableAsync();
+                Shutdown(status.EngineRunning && status.DriverActive && status.StrategyApplied ? 0 : 7);
+                return;
+            }
             if (e.Args.Contains("--engine-hold", StringComparer.OrdinalIgnoreCase))
             {
                 await _controller.EnableAsync();

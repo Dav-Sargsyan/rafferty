@@ -125,7 +125,7 @@ public sealed class CommandDispatcher
 
     private async Task<PipeResponse> OptimizeAsync(string? requestId, CancellationToken token)
     {
-        var result = await _optimizer.OptimizeAsync(token).ConfigureAwait(false);
+        var result = await _optimizer.OptimizeAsync(cancellationToken: token).ConfigureAwait(false);
         if (result.Success && result.SelectedStrategyId is not null)
         {
             var backups = result.Scores.Where(score => score.StrategyId != result.SelectedStrategyId).OrderByDescending(score => score.Score).Take(3).Select(score => score.StrategyId).ToArray();

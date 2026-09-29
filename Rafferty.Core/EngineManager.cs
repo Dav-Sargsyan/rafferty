@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Rafferty.Shared;
 
 namespace Rafferty.Core;
@@ -27,6 +28,8 @@ public sealed class EngineManager : IAsyncDisposable
     }
 
     public event EventHandler? UnexpectedExit;
+
+    public string WorkingDirectory => AppPaths.EngineDirectory;
 
     public EngineSnapshot Snapshot(ReachabilitySnapshot reachability) => new(
         ServiceOnline: true,
@@ -82,6 +85,7 @@ public sealed class EngineManager : IAsyncDisposable
             await EngineIntegrity.VerifyAsync(AppPaths.EngineDirectory, cancellationToken).ConfigureAwait(false);
             await _logger.InfoAsync(await WindowsNetworkPrerequisites.EnsureTcpTimestampsAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
             var expandedArguments = strategy.Arguments.Select(ExpandArgument).ToArray();
+            ValidateReferencedFiles(expandedArguments);
             var startInfo = new ProcessStartInfo
             {
                 FileName = executable,
@@ -101,10 +105,20 @@ public sealed class EngineManager : IAsyncDisposable
             await _logger.InfoAsync($"Engine start command: {_lastCommandLine}", cancellationToken).ConfigureAwait(false);
 
             _stopping = false;
+            var startupReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-            process.OutputDataReceived += (_, args) => QueueEngineLog("INFO", args.Data);
-            process.ErrorDataReceived += (_, args) => QueueEngineLog("ERROR", args.Data);
+            process.OutputDataReceived += (_, args) =>
+            {
+                QueueEngineLog("INFO", args.Data);
+                if (IsStartupReadyMessage(args.Data)) startupReady.TrySetResult();
+            };
+            process.ErrorDataReceived += (_, args) =>
+            {
+                QueueEngineLog("ERROR", args.Data);
+                if (IsStartupReadyMessage(args.Data)) startupReady.TrySetResult();
+            };
             process.Exited += HandleProcessExit;
+            process.Exited += (_, _) => startupReady.TrySetResult();
             if (!process.Start())
             {
                 throw new InvalidOperationException("winws did not start.");
@@ -121,9 +135,9 @@ public sealed class EngineManager : IAsyncDisposable
             _driverActive = false;
             _connectivityVerified = false;
 
-            // winws reports invalid/missing strategy resources by exiting at once.
-            // Do not return a misleading successful state to the UI in that case.
-            await Task.Delay(700, cancellationToken).ConfigureAwait(false);
+            // Prefer winws' own capture-ready signal. The timeout covers builds that do not
+            // print it, after which process and driver state are still verified explicitly.
+            await Task.WhenAny(startupReady.Task, Task.Delay(TimeSpan.FromSeconds(3), cancellationToken)).ConfigureAwait(false);
             if (process.HasExited)
             {
                 throw new InvalidOperationException($"winws failed during startup (exit code {process.ExitCode}). Check engine.log.");
@@ -203,6 +217,7 @@ public sealed class EngineManager : IAsyncDisposable
         _strategyApplied = false;
         _connectivityVerified = false;
         await _logger.InfoAsync("Engine stopped.", cancellationToken).ConfigureAwait(false);
+        await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
     }
 
     private string ResolveEngineExecutable()
@@ -224,6 +239,30 @@ public sealed class EngineManager : IAsyncDisposable
     private static string ExpandArgument(string argument) => argument
         .Replace("{engine}", AppPaths.EngineDirectory, StringComparison.OrdinalIgnoreCase)
         .Replace("{lists}", AppPaths.ListsDirectory, StringComparison.OrdinalIgnoreCase);
+
+    private static void ValidateReferencedFiles(IEnumerable<string> arguments)
+    {
+        var runtimeRoots = new[]
+        {
+            Path.GetFullPath(AppPaths.EngineDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+            Path.GetFullPath(AppPaths.ListsDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar
+        };
+        foreach (var argument in arguments)
+        {
+            var separator = argument.IndexOf('=');
+            if (separator < 0) continue;
+            var value = argument[(separator + 1)..];
+            var fullPath = Path.GetFullPath(value);
+            if (runtimeRoots.Any(root => fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase)) && !File.Exists(fullPath))
+            {
+                throw new FileNotFoundException($"Required strategy resource is missing: {Path.GetFileName(fullPath)}", fullPath);
+            }
+        }
+    }
+
+    private static bool IsStartupReadyMessage(string? message) => message is not null &&
+        (message.Contains("capture is started", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("windivert initialized", StringComparison.OrdinalIgnoreCase));
 
     private void HandleProcessExit(object? sender, EventArgs eventArgs)
     {
@@ -252,9 +291,31 @@ public sealed class EngineManager : IAsyncDisposable
     private static string FormatCommandLine(string executable, IEnumerable<string> arguments) =>
         string.Join(' ', new[] { Quote(executable) }.Concat(arguments.Select(Quote)));
 
-    private static string Quote(string value) => value.Any(char.IsWhiteSpace) || value.Contains('"')
-        ? $"\"{value.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal)}\""
-        : value;
+    private static string Quote(string value)
+    {
+        if (value.Length > 0 && !value.Any(char.IsWhiteSpace) && !value.Contains('"')) return value;
+
+        var result = new StringBuilder("\"");
+        var backslashes = 0;
+        foreach (var character in value)
+        {
+            if (character == '\\')
+            {
+                backslashes++;
+                continue;
+            }
+            if (character == '"')
+            {
+                result.Append('\\', (backslashes * 2) + 1).Append('"');
+                backslashes = 0;
+                continue;
+            }
+            result.Append('\\', backslashes).Append(character);
+            backslashes = 0;
+        }
+        result.Append('\\', backslashes * 2).Append('"');
+        return result.ToString();
+    }
 
     public async ValueTask DisposeAsync()
     {

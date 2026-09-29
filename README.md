@@ -1,6 +1,6 @@
 # Rafferty
 
-Rafferty 1.1.0 is a self-contained native Windows application for applying and testing DPI-desynchronization profiles. The production UI is WPF/.NET; it starts the bundled `winws` engine directly with administrator rights and verifies that the WinDivert driver is actually active before reporting protection.
+Rafferty 1.2.0 is a self-contained native Windows application for applying and testing DPI-desynchronization profiles. The production UI is WPF/.NET; it starts the bundled `winws` engine directly with administrator rights and verifies that the WinDivert driver is actually active before reporting protection.
 
 ## Current capabilities
 
@@ -9,7 +9,7 @@ Rafferty 1.1.0 is a self-contained native Windows application for applying and t
 - bundled WinDivert runtime, payloads, host lists and IP sets;
 - SHA-256 verification and automatic restoration of embedded runtime files;
 - YouTube frontend/CDN/HTTP3 and Discord API/CDN/Gateway/STUN diagnostics;
-- automatic strategy selection, manual selection and latency testing;
+- automatic strategy selection, exact manual ALT selection and latency testing;
 - A/B testing with the engine disabled and enabled;
 - sanitized JSON diagnostic export and rotating local logs;
 - Russian and English UI, tray integration and startup settings;
@@ -35,7 +35,7 @@ dotnet test Rafferty.Core.Tests\Rafferty.Core.Tests.csproj -c Release -p:Platfor
 Publish one self-contained executable:
 
 ```powershell
-dotnet publish Rafferty.UI\Rafferty.UI.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o Rafferty-1.1.0
+dotnet publish Rafferty.UI\Rafferty.UI.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o Rafferty-1.2.0
 ```
 
 Runtime network interception requires administrator rights. Do not disable antivirus or firewall protection globally.
@@ -51,6 +51,8 @@ Rafferty.exe --validate-strategies strategy-validation.json
 Rafferty.exe --export-command-lines command-lines.json
 Rafferty.exe --export-diagnostics diagnostics.json
 Rafferty.exe --parity-test parity.txt
+Rafferty.exe --manual-strategy general--alt7 manual-alt7.json
+Rafferty.exe --auto-optimize auto-optimize.json
 ```
 
 See [PARITY_AUDIT.md](PARITY_AUDIT.md) for the reference comparison and the limits of local validation.
