@@ -1,0 +1,2 @@
+# User domains. One domain per line.
+

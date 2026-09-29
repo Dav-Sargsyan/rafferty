@@ -1,0 +1,13 @@
+<Window x:Class="Rafferty.UI.DiagnosticsWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="{DynamicResource AppName}" Width="680" Height="500" ResizeMode="NoResize" WindowStyle="None" WindowStartupLocation="CenterOwner" Background="#090B10">
+    <WindowChrome.WindowChrome><WindowChrome CaptionHeight="48" CornerRadius="14" GlassFrameThickness="0" ResizeBorderThickness="0" UseAeroCaptionButtons="False"/></WindowChrome.WindowChrome>
+    <Border BorderBrush="#252B38" BorderThickness="1" CornerRadius="14" Background="#090B10">
+        <Grid Margin="22,0,14,18">
+            <Grid.RowDefinitions><RowDefinition Height="52"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <Grid Grid.Row="0"><TextBlock Text="RAFFERTY" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource AccentTextBrush}" VerticalAlignment="Center"/><Button Content="×" Style="{StaticResource CloseButton}" Width="38" Height="32" FontSize="17" HorizontalAlignment="Right" VerticalAlignment="Center" WindowChrome.IsHitTestVisibleInChrome="True" Click="CloseButton_Click"/></Grid>
+            <StackPanel Grid.Row="1" Margin="0,4,8,14"><TextBlock x:Name="Heading" Text="Diagnostics" FontSize="24" FontWeight="SemiBold"/><TextBlock x:Name="Description" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,5,0,0"/></StackPanel>
+            <TextBox x:Name="Output" Grid.Row="2" Margin="0,0,8,0" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="14" FontFamily="Cascadia Mono, Consolas" FontSize="11"/>
+            <Button Grid.Row="3" Content="{DynamicResource Close}" Width="92" HorizontalAlignment="Right" Margin="0,14,8,0" Click="CloseButton_Click"/>
+        </Grid>
+    </Border>
+</Window>

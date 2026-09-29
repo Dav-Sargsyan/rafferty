@@ -1,0 +1,15 @@
+<Project>
+  <Target Name="CopyEnginePayload" AfterTargets="Build" Condition="'$(MSBuildProjectName)' == 'Rafferty.Service' And Exists('$(MSBuildThisFileDirectory)engine\winws.exe')">
+    <ItemGroup>
+      <EnginePayload Include="$(MSBuildThisFileDirectory)engine\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(EnginePayload)" DestinationFiles="@(EnginePayload->'$(OutDir)engine\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CopyEnginePayloadToPublish" AfterTargets="Publish" Condition="'$(MSBuildProjectName)' == 'Rafferty.Service' And Exists('$(MSBuildThisFileDirectory)engine\winws.exe')">
+    <ItemGroup>
+      <PublishedEnginePayload Include="$(MSBuildThisFileDirectory)engine\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(PublishedEnginePayload)" DestinationFiles="@(PublishedEnginePayload->'$(PublishDir)engine\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+</Project>
+

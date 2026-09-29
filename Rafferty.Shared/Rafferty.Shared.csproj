@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Rafferty.Shared</AssemblyName>
+    <RootNamespace>Rafferty.Shared</RootNamespace>
+  </PropertyGroup>
+</Project>
+

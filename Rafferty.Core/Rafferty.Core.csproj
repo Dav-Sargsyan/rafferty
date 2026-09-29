@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>Rafferty.Core</AssemblyName>
+    <RootNamespace>Rafferty.Core</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Rafferty.Shared\Rafferty.Shared.csproj" />
+  </ItemGroup>
+</Project>
+

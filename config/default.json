@@ -1,0 +1,7 @@
+{
+  "mode": "automatic",
+  "start_with_windows": false,
+  "minimize_to_tray": true,
+  "health_check_minutes": 5,
+  "advanced_mode": false
+}

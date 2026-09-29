@@ -1,0 +1,23 @@
+.vs/
+bin/
+obj/
+artifacts/
+.cache/
+node_modules/
+dist/
+target/
+src-tauri/target/
+.idea/
+.vscode/
+*.log
+
+# Local publish outputs and superseded project copies
+/Rafferty-1.1.0/
+/Rafferty-Final/
+/Rafferty-Release/
+/publish-*/
+/AegisNet.Core.Tests/
+/AegisNet.Service/
+/AegisNet.Shared/
+/AegisNet.UI/
+

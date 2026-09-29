@@ -1,0 +1,9 @@
+# User-maintained target list. One domain per line.
+youtube.com
+googlevideo.com
+discord.com
+discord.gg
+discordapp.com
+discord.media
+
+

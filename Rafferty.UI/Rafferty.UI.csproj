@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>Rafferty</AssemblyName>
+    <AssemblyTitle>Rafferty</AssemblyTitle>
+    <Product>Rafferty</Product>
+    <Description>Lightweight connection optimization utility.</Description>
+    <RootNamespace>Rafferty.UI</RootNamespace>
+    <ApplicationIcon>..\assets\app-icon.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Rafferty.Shared\Rafferty.Shared.csproj" />
+    <ProjectReference Include="..\Rafferty.Core\Rafferty.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\engine\**\*" LogicalName="Rafferty.Runtime/engine/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\lists\**\*" LogicalName="Rafferty.Runtime/lists/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\strategies\strategies.json" LogicalName="Rafferty.Runtime/strategies.json" />
+    <EmbeddedResource Include="..\licenses\**\*" LogicalName="Rafferty.Runtime/licenses/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>
+
