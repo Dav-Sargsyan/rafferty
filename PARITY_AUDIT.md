@@ -20,7 +20,7 @@ The prior Rafferty build was not functionally equivalent. It had four hand-writt
 | User lists | Created by `service.bat` | Wrong/missing filenames | OK | Correct three user files are created automatically with safe non-empty defaults. |
 | IPSet | Downloaded list (33,048 entries in audited copy) | 18-byte sentinel | OK | Loaded 572,927-byte list; runtime log confirms 33,048 IP/subnets. |
 | IPSet excludes | System + user | User file missing | OK | Both files extracted/created and read successfully by `winws`. |
-| Game filters | Configurable TCP/UDP ranges | Broad hard-coded ranges | PARTIAL | Default now matches upstream disabled state (port 12); UI range configuration is not yet exposed. |
+| Game filters | Configurable TCP/UDP ranges | Broad hard-coded ranges | OK | Default matches upstream disabled state (port 12); the WPF settings toggle applies the configured TCP/UDP ranges at runtime. |
 | TCP timestamps | Checked/enabled by service script | Ignored | PARTIAL | State is inspected; known disabled states are enabled and logged. Unknown localized output is left unchanged rather than modified blindly. |
 | Windows service mode | Optional upstream path | Separate obsolete service project | NOT REQUIRED FOR FOREGROUND MODE | Direct elevated `winws` + WinDivert is confirmed working. Persistent service installation is not used by the portable UI. |
 | Driver cleanup/conflict diagnostics | Extensive service diagnostics | Missing | PARTIAL | BFE/admin/driver failures block protected state; complete interactive conflict removal is intentionally not automatic. |
@@ -50,7 +50,7 @@ The prior Rafferty build was not functionally equivalent. It had four hand-writt
 - All 12 runtime resources referenced by ALT7 were present; the bundled `winws.exe` SHA-256 was `AFFB4F69D2EA302A7ABCCD5325D81826E140DDAE014F1E070BC4A6C0DD555188`.
 - Manual ALT7 persistence was exercised across two separate application processes. The second process started `general--alt7` directly and passed the smoke test; it did not invoke automatic selection.
 - Automatic optimization completed in 7.2 seconds on the validation machine, tested five real profiles, found three with YouTube, Discord and voice all working, and selected `ALT5` without looping.
-- The selected YouTube/Discord/voice checkboxes now control both scoring and the success criteria; 12 automated tests pass, including persistence of imported BAT strategies in a separate user database.
+- The selected YouTube/Discord/voice toggles control both scoring and the success criteria; automated tests cover runtime transformation, update verification and persistence of imported BAT strategies.
 - Final elevated startup validation passed for all 22 profiles with an active engine and WinDivert driver.
 
 ## Remaining external validation boundary

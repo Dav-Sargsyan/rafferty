@@ -1,6 +1,0 @@
-dist
-node_modules
-src-tauri/target
-src-tauri/icons
-package-lock.json
-

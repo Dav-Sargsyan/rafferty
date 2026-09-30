@@ -16,7 +16,7 @@ Rafferty 1.3.0 is a self-contained native Windows application for applying and t
 - self-contained single-file `Rafferty.exe` publication.
 - cached Auto Mode with quick health checks, interactive IPSet/game filtering and SHA-256 verified self-update support.
 
-The React/Tauri files under `src` and `src-tauri` are retained as the earlier interface prototype. The shipped application is `Rafferty.UI`.
+The shipped desktop application is the WPF project under `Rafferty.UI`; the network and strategy logic lives in `Rafferty.Core` and shared contracts in `Rafferty.Shared`.
 
 ## Build
 

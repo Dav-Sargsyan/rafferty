@@ -52,12 +52,6 @@ bundle.
 Rafferty ships the unmodified WinDivert DLL/driver used by the pinned upstream
 runtime. The applicable WinDivert license text and source location are bundled.
 
-## Application dependencies
-
-The npm and Cargo dependencies are consumed under their respective upstream
-licenses. Before a public release, generate a lockfile-based Software Bill of
-Materials and bundled license report, then review it in CI.
-
 ## Practical distribution policy
 
 1. Keep a recorded source revision, checksums and licenses for every bundled
