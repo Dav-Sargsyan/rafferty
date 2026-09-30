@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
@@ -26,6 +27,8 @@ public partial class MainWindow : Window
     private readonly RaffertyController _controller;
     private readonly SettingsService _settingsService;
     private readonly LatencyTester _latencyTester = new();
+    private readonly UpdateService _updateService = new();
+    private readonly JsonFileStore<UpdateState> _updateStateStore = new(AppPaths.UpdateStateFile);
     private readonly Forms.NotifyIcon _tray;
     private readonly CancellationTokenSource _lifetime = new();
     private UserSettings _settings;
@@ -34,6 +37,7 @@ public partial class MainWindow : Window
     private bool _loadingSettings;
     private IReadOnlyList<Strategy> _strategies = [];
     private AppPage _currentPage = AppPage.Dashboard;
+    private UpdateManifest? _availableUpdate;
 
     internal MainWindow(RaffertyController controller, SettingsService settingsService, UserSettings settings)
     {
@@ -41,12 +45,15 @@ public partial class MainWindow : Window
         _settingsService = settingsService;
         _settings = settings;
         InitializeComponent();
+        CurrentVersionText.Text = AppVersion.Display;
         ApplySettingsToControls();
         _tray = CreateTrayIcon();
         Loaded += async (_, _) =>
         {
             await LoadStrategiesAsync();
+            RefreshRuntimeDetails();
             UpdateStatus(_controller.Status);
+            if (_settings.AutoCheckUpdates) await CheckForUpdatesAsync(false);
         };
     }
 
@@ -79,6 +86,12 @@ public partial class MainWindow : Window
         await Task.Delay(240);
         UpdateLayout();
         RenderWindow(Path.Combine(directory, "settings.png"));
+        foreach (var scale in new[] { 1d, 1.25d, 1.5d })
+            RenderWindow(Path.Combine(directory, $"settings-{scale * 100:0}.png"), scale);
+        SettingsScrollViewer.ScrollToEnd();
+        UpdateLayout();
+        RenderWindow(Path.Combine(directory, "settings-updates.png"));
+        SettingsScrollViewer.ScrollToHome();
         Navigate(AppPage.Advanced);
         var previewStrategy = SelectedStrategyId() ?? _settings.ManualStrategyId;
         AdvancedStrategyText.Text = StrategyNames.DisplayName(previewStrategy);
@@ -86,6 +99,8 @@ public partial class MainWindow : Window
         await Task.Delay(240);
         UpdateLayout();
         RenderWindow(Path.Combine(directory, "advanced.png"));
+        foreach (var scale in new[] { 1d, 1.25d, 1.5d })
+            RenderWindow(Path.Combine(directory, $"advanced-{scale * 100:0}.png"), scale);
         var diagnostics = new DiagnosticsWindow(Localization.T("Diagnostics"), Localization.T("DiagnosticsDescription"), "Internet: Success — HTTP 204\nYouTube: Success — TCP 443\nDiscord API: Success — HTTP 200\nDiscord Voice / STUN: Success — UDP response received") { Owner = this };
         diagnostics.Show();
         diagnostics.RenderForTest(Path.Combine(directory, "diagnostics.png"));
@@ -104,10 +119,9 @@ public partial class MainWindow : Window
         Close();
     }
 
-    private void RenderWindow(string path)
+    private void RenderWindow(string path, double scale = 1)
     {
-        var dpi = VisualTreeHelper.GetDpi(this);
-        var bitmap = new RenderTargetBitmap((int)Math.Ceiling(ActualWidth * dpi.DpiScaleX), (int)Math.Ceiling(ActualHeight * dpi.DpiScaleY), dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+        var bitmap = new RenderTargetBitmap((int)Math.Ceiling(ActualWidth * scale), (int)Math.Ceiling(ActualHeight * scale), 96 * scale, 96 * scale, PixelFormats.Pbgra32);
         bitmap.Render(this);
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
@@ -157,7 +171,9 @@ public partial class MainWindow : Window
                         _lifetime.Token,
                         _settings.CheckYouTube,
                         _settings.CheckDiscord,
-                        _settings.CheckVoice);
+                        _settings.CheckVoice,
+                        _settings.AutoFindOnFailure,
+                        _settings.RecheckOnStartup);
                 ActivityText.Text = Localization.T("ConnectionOptimized");
                 if (_settings.Notifications && status.DriverActive && status.StrategyApplied && status.ConnectivityVerified)
                     _tray.ShowBalloonTip(1200, Localization.T("AppName"), Localization.T("ConnectionProtected"), Forms.ToolTipIcon.Info);
@@ -324,6 +340,16 @@ public partial class MainWindow : Window
         CheckYouTubeBox.IsChecked = _settings.CheckYouTube;
         CheckDiscordBox.IsChecked = _settings.CheckDiscord;
         CheckVoiceBox.IsChecked = _settings.CheckVoice;
+        AutoFindOnFailureToggle.IsChecked = _settings.AutoFindOnFailure;
+        RecheckOnStartupToggle.IsChecked = _settings.RecheckOnStartup;
+        AutoCheckUpdatesToggle.IsChecked = _settings.AutoCheckUpdates;
+        GameFilterToggle.IsChecked = _settings.GameFilterEnabled;
+        IpSetModeSelector.SelectedIndex = _settings.IpSetMode switch
+        {
+            IpSetMode.None => 0,
+            IpSetMode.Any => 2,
+            _ => 1
+        };
         ModeSelector.SelectedIndex = _settings.ManualMode ? 1 : 0;
         ManualStrategyPanel.Visibility = _settings.ManualMode ? Visibility.Visible : Visibility.Collapsed;
         LanguageSelector.SelectedIndex = Localization.Normalize(_settings.Language) == Localization.EnglishLanguage ? 1 : 0;
@@ -343,7 +369,17 @@ public partial class MainWindow : Window
             ManualStrategyId = SelectedStrategyId() ?? _settings.ManualStrategyId,
             CheckYouTube = CheckYouTubeBox.IsChecked == true,
             CheckDiscord = CheckDiscordBox.IsChecked == true,
-            CheckVoice = CheckVoiceBox.IsChecked == true
+            CheckVoice = CheckVoiceBox.IsChecked == true,
+            AutoFindOnFailure = AutoFindOnFailureToggle.IsChecked == true,
+            RecheckOnStartup = RecheckOnStartupToggle.IsChecked == true,
+            AutoCheckUpdates = AutoCheckUpdatesToggle.IsChecked == true,
+            GameFilterEnabled = GameFilterToggle.IsChecked == true,
+            IpSetMode = IpSetModeSelector.SelectedIndex switch
+            {
+                0 => IpSetMode.None,
+                2 => IpSetMode.Any,
+                _ => IpSetMode.Loaded
+            }
         };
         try { await _settingsService.SaveAsync(_settings, _lifetime.Token); }
         catch (Exception exception)
@@ -374,6 +410,31 @@ public partial class MainWindow : Window
         StrategySelector.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
         _loadingSettings = false;
     }
+
+    private EngineRuntimeOptions RuntimeOptionsFromSettings() => new(
+        _settings.IpSetMode,
+        _settings.GameFilterEnabled,
+        _settings.GameFilterTcp,
+        _settings.GameFilterUdp);
+
+    private void RefreshRuntimeDetails()
+    {
+        AdvancedIpSetText.Text = _settings.IpSetMode switch
+        {
+            IpSetMode.None => $"{Localization.T("IpSetOff")} (none)",
+            IpSetMode.Any => $"{Localization.T("IpSetAny")} (any)",
+            _ => $"{Localization.T("IpSetLoaded")} (loaded)"
+        };
+        AdvancedGameFilterText.Text = _settings.GameFilterEnabled
+            ? $"TCP {_settings.GameFilterTcp}; UDP {_settings.GameFilterUdp}"
+            : Localization.T("GameFilterDisabled");
+        CustomDomainsCountText.Text = string.Format(Localization.T("DomainCount"), CountListEntries(Path.Combine(AppPaths.ListsDirectory, "list-general-user.txt")));
+        ExcludedDomainsCountText.Text = string.Format(Localization.T("DomainCount"), CountListEntries(Path.Combine(AppPaths.ListsDirectory, "list-exclude-user.txt")));
+    }
+
+    private static int CountListEntries(string path) => File.Exists(path)
+        ? File.ReadLines(path).Count(line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith('#'))
+        : 0;
 
     private string? SelectedStrategyId() =>
         StrategySelector.SelectedItem is ComboBoxItem { Tag: string id } ? id : null;
@@ -480,6 +541,7 @@ public partial class MainWindow : Window
         _exitRequested = true;
         _lifetime.Cancel();
         _latencyTester.Dispose();
+        _updateService.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
         await Task.Yield();
@@ -542,7 +604,43 @@ public partial class MainWindow : Window
     private async void LatencyButton_Click(object sender, RoutedEventArgs e) => await TestLatencyAsync();
     private void SettingsButton_Click(object sender, RoutedEventArgs e) => ShowSettings();
     private void BackButton_Click(object sender, RoutedEventArgs e) => ShowDashboard();
-    private async void SettingToggle_Click(object sender, RoutedEventArgs e) => await SaveSettingsAsync();
+    private async void SettingToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (_loadingSettings) return;
+        if (sender is ToggleButton toggle
+            && (ReferenceEquals(toggle, CheckYouTubeBox) || ReferenceEquals(toggle, CheckDiscordBox) || ReferenceEquals(toggle, CheckVoiceBox))
+            && CheckYouTubeBox.IsChecked != true && CheckDiscordBox.IsChecked != true && CheckVoiceBox.IsChecked != true)
+        {
+            toggle.IsChecked = true;
+            return;
+        }
+        await SaveSettingsAsync();
+    }
+    private async void RuntimeSetting_Changed(object sender, RoutedEventArgs e) => await ApplyRuntimeSettingsAsync();
+    private async void RuntimeSetting_Changed(object sender, SelectionChangedEventArgs e) => await ApplyRuntimeSettingsAsync();
+
+    private async Task ApplyRuntimeSettingsAsync()
+    {
+        if (_loadingSettings) return;
+        var previous = _settings;
+        await SaveSettingsAsync();
+        try
+        {
+            SetBusy(true, Localization.T("ApplyingRuntimeSettings"));
+            var status = await _controller.ConfigureRuntimeAsync(RuntimeOptionsFromSettings(), true,
+                _settings.CheckYouTube, _settings.CheckDiscord, _settings.CheckVoice, _lifetime.Token);
+            RefreshRuntimeDetails();
+            UpdateStatus(status);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _settings = previous;
+            ApplySettingsToControls();
+            await _settingsService.SaveAsync(_settings, _lifetime.Token);
+            System.Windows.MessageBox.Show(this, exception.Message, Localization.T("SettingsErrorTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally { SetBusy(false, ActivityText.Text); }
+    }
     private async void OpenAdvancedButton_Click(object sender, RoutedEventArgs e)
     {
         Navigate(AppPage.Advanced);
@@ -621,7 +719,7 @@ public partial class MainWindow : Window
                 .OrderBy(Path.GetFileName).Select(path => $"===== {Path.GetFileName(path)} ====={Environment.NewLine}{File.ReadAllText(path)}"))
             : Localization.T("NoLogs");
         var heading = Localization.T("About");
-        var description = Localization.T("AboutText").Replace("\\n", " • ");
+        var description = $"Rafferty {AppVersion.Display} • {Localization.T("AboutText").Replace("\\n", " • ")}";
         new DiagnosticsWindow(heading, description, notices) { Owner = this }.ShowDialog();
     }
     private void LogsButton_Click(object sender, RoutedEventArgs e)
@@ -632,4 +730,96 @@ public partial class MainWindow : Window
     }
     private void MinimizeButton_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+
+    private async void CheckUpdatesButton_Click(object sender, RoutedEventArgs e) => await CheckForUpdatesAsync(true);
+
+    private async Task CheckForUpdatesAsync(bool force)
+    {
+        UpdateState state;
+        try { state = await _updateStateStore.LoadAsync(_lifetime.Token) ?? new UpdateState(); }
+        catch (Exception exception) when (exception is IOException or System.Text.Json.JsonException)
+        {
+            state = new UpdateState();
+        }
+        if (!force && state.LastCheckedAt is { } last && DateTimeOffset.UtcNow - last < TimeSpan.FromHours(24))
+        {
+            if (state.LatestManifest is { } cached && UpdateService.ParseVersion(cached.Version) > AppVersion.Current)
+            {
+                ShowAvailableUpdate(cached);
+            }
+            return;
+        }
+
+        CheckUpdatesButton.IsEnabled = false;
+        UpdateStatusText.Text = Localization.T("CheckingUpdates");
+        try
+        {
+            var result = await _updateService.CheckAsync(token: _lifetime.Token);
+            await _updateStateStore.SaveAsync(new(DateTimeOffset.UtcNow, result.Manifest), _lifetime.Token);
+            if (result.UpdateAvailable)
+            {
+                ShowAvailableUpdate(result.Manifest);
+                if (!force && _settings.Notifications)
+                {
+                    _tray.ShowBalloonTip(3000, Localization.T("AppName"), string.Format(Localization.T("UpdateAvailable"), result.Manifest.Version), Forms.ToolTipIcon.Info);
+                }
+            }
+            else
+            {
+                _availableUpdate = null;
+                UpdateNowButton.Visibility = Visibility.Collapsed;
+                UpdateLaterButton.Visibility = Visibility.Collapsed;
+                UpdateStatusText.Text = Localization.T("LatestVersionInstalled");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await _updateStateStore.SaveAsync(new(DateTimeOffset.UtcNow, state.LatestManifest), _lifetime.Token);
+            UpdateStatusText.Text = string.Format(Localization.T("UpdateError"), exception.Message);
+        }
+        finally { CheckUpdatesButton.IsEnabled = true; }
+    }
+
+    private void ShowAvailableUpdate(UpdateManifest manifest)
+    {
+        _availableUpdate = manifest;
+        UpdateStatusText.Text = $"{string.Format(Localization.T("UpdateAvailable"), manifest.Version)}\n\n{manifest.ReleaseNotes}";
+        UpdateNowButton.Visibility = Visibility.Visible;
+        UpdateLaterButton.Visibility = Visibility.Visible;
+    }
+
+    private void UpdateLaterButton_Click(object sender, RoutedEventArgs e)
+    {
+        UpdateNowButton.Visibility = Visibility.Collapsed;
+        UpdateLaterButton.Visibility = Visibility.Collapsed;
+        UpdateStatusText.Text = Localization.T("UpdateDeferred");
+    }
+
+    private async void UpdateNowButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_availableUpdate is null) return;
+        CheckUpdatesButton.IsEnabled = UpdateNowButton.IsEnabled = false;
+        UpdateProgress.Visibility = Visibility.Visible;
+        try
+        {
+            var versionDirectory = Path.Combine(AppPaths.UpdatesDirectory, _availableUpdate.Version);
+            var downloaded = Path.Combine(versionDirectory, "Rafferty.new.exe");
+            var progress = new Progress<double>(value =>
+            {
+                UpdateProgress.Value = value;
+                UpdateStatusText.Text = string.Format(Localization.T("DownloadingUpdate"), value);
+            });
+            await _updateService.DownloadAsync(_availableUpdate, downloaded, progress, _lifetime.Token);
+            UpdateStatusText.Text = Localization.T("InstallingUpdate");
+            await _controller.DisableAsync(_lifetime.Token);
+            SelfUpdateInstaller.StartUpdater(downloaded);
+            await ExitApplicationAsync();
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            UpdateStatusText.Text = string.Format(Localization.T("UpdateError"), exception.Message);
+            CheckUpdatesButton.IsEnabled = UpdateNowButton.IsEnabled = true;
+            UpdateProgress.Visibility = Visibility.Collapsed;
+        }
+    }
 }

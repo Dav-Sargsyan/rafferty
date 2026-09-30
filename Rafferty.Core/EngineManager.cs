@@ -20,6 +20,7 @@ public sealed class EngineManager : IAsyncDisposable
     private bool _strategyApplied;
     private bool _connectivityVerified;
     private bool _stopping;
+    private EngineRuntimeOptions _runtimeOptions = new();
 
     public EngineManager(StrategyStore strategies, RotatingFileLogger logger)
     {
@@ -30,6 +31,9 @@ public sealed class EngineManager : IAsyncDisposable
     public event EventHandler? UnexpectedExit;
 
     public string WorkingDirectory => AppPaths.EngineDirectory;
+    public EngineRuntimeOptions RuntimeOptions => _runtimeOptions;
+
+    public void SetRuntimeOptions(EngineRuntimeOptions options) => _runtimeOptions = options;
 
     public EngineSnapshot Snapshot(ReachabilitySnapshot reachability) => new(
         ServiceOnline: true,
@@ -51,7 +55,8 @@ public sealed class EngineManager : IAsyncDisposable
     public async Task<string> GetCommandLineAsync(string strategyId, bool sanitizePaths = false, CancellationToken token = default)
     {
         var strategy = await _strategies.GetAsync(strategyId, token).ConfigureAwait(false);
-        var command = FormatCommandLine(AppPaths.EngineExecutable, strategy.Arguments.Select(ExpandArgument));
+        var command = FormatCommandLine(AppPaths.EngineExecutable,
+            StrategyRuntimeTransformer.Transform(strategy.Arguments, _runtimeOptions).Select(ExpandArgument));
         return sanitizePaths
             ? command.Replace(AppPaths.EngineDirectory, "{runtime}\\engine", StringComparison.OrdinalIgnoreCase)
                 .Replace(AppPaths.ListsDirectory, "{runtime}\\lists", StringComparison.OrdinalIgnoreCase)
@@ -84,7 +89,8 @@ public sealed class EngineManager : IAsyncDisposable
             var executable = ResolveEngineExecutable();
             await EngineIntegrity.VerifyAsync(AppPaths.EngineDirectory, cancellationToken).ConfigureAwait(false);
             await _logger.InfoAsync(await WindowsNetworkPrerequisites.EnsureTcpTimestampsAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
-            var expandedArguments = strategy.Arguments.Select(ExpandArgument).ToArray();
+            var runtimeArguments = StrategyRuntimeTransformer.Transform(strategy.Arguments, _runtimeOptions);
+            var expandedArguments = runtimeArguments.Select(ExpandArgument).ToArray();
             ValidateReferencedFiles(expandedArguments);
             var startInfo = new ProcessStartInfo
             {
@@ -149,7 +155,7 @@ public sealed class EngineManager : IAsyncDisposable
                 await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
                 throw new InvalidOperationException("winws is running but the WinDivert driver is not active.");
             }
-            _strategyApplied = expandedArguments.Count(argument => argument == "--new") == strategy.Arguments.Count(argument => argument == "--new");
+            _strategyApplied = true;
 
             await _logger.SuccessAsync($"Engine started. pid={process.Id} strategy={strategy.Id} driver=active rules={expandedArguments.Length} sections={expandedArguments.Count(argument => argument == "--new") + 1}", cancellationToken).ConfigureAwait(false);
             return Snapshot(reachability);

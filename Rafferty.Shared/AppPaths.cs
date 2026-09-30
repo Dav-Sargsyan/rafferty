@@ -4,7 +4,8 @@ public static class AppPaths
 {
     public const string PipeName = "Rafferty";
     public const string ServiceName = "Rafferty.Service";
-    public const string RuntimeVersion = "1.2.0-ref-249a704";
+    public const string RuntimeVersion = "1.3.0-ref-249a704";
+    public const string UpdateManifestUrl = "https://github.com/Dav-Sargsyan/rafferty/releases/latest/download/update.json";
 
     public static string UserDataRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
@@ -18,6 +19,8 @@ public static class AppPaths
     public static string StrategiesFile => Path.Combine(RuntimeRoot, "strategies.json");
     public static string CustomStrategiesFile => Path.Combine(UserDataRoot, "custom-strategies.json");
     public static string RuntimeFile => Path.Combine(UserDataRoot, "state.json");
+    public static string UpdateStateFile => Path.Combine(UserDataRoot, "update-state.json");
+    public static string UpdatesDirectory => Path.Combine(UserDataRoot, "updates");
     public static string EngineDirectory => Path.Combine(RuntimeRoot, "engine");
     public static string EngineExecutable => Path.Combine(EngineDirectory, "winws.exe");
     public static string ListsDirectory => Path.Combine(RuntimeRoot, "lists");

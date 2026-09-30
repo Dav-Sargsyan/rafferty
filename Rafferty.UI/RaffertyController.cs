@@ -42,7 +42,9 @@ internal sealed class RaffertyController : IAsyncDisposable
         CancellationToken token = default,
         bool checkYouTube = true,
         bool checkDiscord = true,
-        bool checkVoice = true)
+        bool checkVoice = true,
+        bool autoFindOnFailure = true,
+        bool recheckOnStartup = false)
     {
         var state = await _stateStore.LoadAsync(token).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(state?.ActiveStrategyId))
@@ -60,7 +62,9 @@ internal sealed class RaffertyController : IAsyncDisposable
             try
             {
                 await Engine.StartAsync(state.ActiveStrategyId, _reachability, token).ConfigureAwait(false);
-                var quick = await Tester.RunDiagnosticsAsync(token).ConfigureAwait(false);
+                var quick = recheckOnStartup
+                    ? await Tester.RunDiagnosticsAsync(token).ConfigureAwait(false)
+                    : await Tester.RunQuickHealthCheckAsync(checkYouTube, checkDiscord, checkVoice, token).ConfigureAwait(false);
                 _reachability = ConnectivityTester.Summarize(quick);
                 Engine.SetConnectivityVerified(SelectedServicesWorking(quick, checkYouTube, checkDiscord, checkVoice));
                 if (SelectedServicesWorking(quick, checkYouTube, checkDiscord, checkVoice))
@@ -73,6 +77,10 @@ internal sealed class RaffertyController : IAsyncDisposable
             catch (Exception) when (!token.IsCancellationRequested)
             {
                 await Engine.StopAsync(_reachability, token).ConfigureAwait(false);
+            }
+            if (!autoFindOnFailure)
+            {
+                throw new InvalidOperationException("The saved strategy did not pass the health check. Automatic strategy selection is disabled.");
             }
         }
 
@@ -100,6 +108,33 @@ internal sealed class RaffertyController : IAsyncDisposable
 
     public async Task<IReadOnlyList<Strategy>> GetStrategiesAsync(CancellationToken token = default) =>
         (await _strategies!.LoadAsync(token).ConfigureAwait(false)).Strategies;
+
+    public async Task<DateTimeOffset> GetStrategyDatabaseUpdatedAtAsync(CancellationToken token = default) =>
+        (await _strategies!.LoadAsync(token).ConfigureAwait(false)).UpdatedAt;
+
+    public async Task<EngineSnapshot> ConfigureRuntimeAsync(
+        EngineRuntimeOptions options,
+        bool restartIfActive,
+        bool checkYouTube = true,
+        bool checkDiscord = true,
+        bool checkVoice = true,
+        CancellationToken token = default)
+    {
+        var activeStrategy = Status.EngineRunning ? Status.StrategyId : null;
+        if (restartIfActive && !string.IsNullOrWhiteSpace(activeStrategy))
+        {
+            await Engine.StopAsync(_reachability, token).ConfigureAwait(false);
+        }
+        Engine.SetRuntimeOptions(options);
+        if (restartIfActive && !string.IsNullOrWhiteSpace(activeStrategy))
+        {
+            await Engine.StartAsync(activeStrategy, ReachabilitySnapshot.Unknown, token).ConfigureAwait(false);
+            var quick = await Tester.RunQuickHealthCheckAsync(checkYouTube, checkDiscord, checkVoice, token).ConfigureAwait(false);
+            _reachability = ConnectivityTester.Summarize(quick);
+            Engine.SetConnectivityVerified(SelectedServicesWorking(quick, checkYouTube, checkDiscord, checkVoice));
+        }
+        return Status;
+    }
 
     public async Task<IReadOnlyList<Strategy>> ReloadStrategiesAsync(CancellationToken token = default)
     {
@@ -150,7 +185,7 @@ internal sealed class RaffertyController : IAsyncDisposable
     {
         await Engine.StopAsync(_reachability, token).ConfigureAwait(false);
         await _stateStore.SaveAsync(new(null, [], null), token).ConfigureAwait(false);
-        return await EnableAsync(progress, token, checkYouTube, checkDiscord, checkVoice).ConfigureAwait(false);
+        return await EnableAsync(progress, token, checkYouTube, checkDiscord, checkVoice, autoFindOnFailure: true).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<DiagnosticResult>> RunDiagnosticsAsync(CancellationToken token = default)
@@ -202,7 +237,7 @@ internal sealed class RaffertyController : IAsyncDisposable
         var report = new
         {
             product = "Rafferty",
-            version = "1.2.0",
+            version = AppVersion.Display,
             generatedAtUtc = DateTimeOffset.UtcNow,
             windows = Environment.OSVersion.VersionString,
             engineVersion = version,

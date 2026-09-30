@@ -13,6 +13,25 @@ public partial class App : System.Windows.Application
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        base.OnStartup(e);
+        var applyUpdateIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--apply-update", StringComparison.OrdinalIgnoreCase));
+        if (applyUpdateIndex >= 0 && applyUpdateIndex + 2 < e.Args.Length)
+        {
+            try
+            {
+                var target = e.Args[applyUpdateIndex + 1];
+                var previousPid = int.Parse(e.Args[applyUpdateIndex + 2], System.Globalization.CultureInfo.InvariantCulture);
+                await SelfUpdateInstaller.ApplyAsync(target, previousPid);
+                Shutdown(0);
+            }
+            catch (Exception exception)
+            {
+                System.Windows.MessageBox.Show(exception.Message, "Rafferty Update", MessageBoxButton.OK, MessageBoxImage.Error);
+                Shutdown(10);
+            }
+            return;
+        }
+
         _singleInstance = new Mutex(true, "Local\\Rafferty.SingleInstance", out var created);
         if (!created)
         {
@@ -20,12 +39,17 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        base.OnStartup(e);
         Localization.Apply(Localization.DefaultLanguage);
         try
         {
             _controller = new RaffertyController();
             await _controller.InitializeAsync();
+            string? postUpdateReadyMarker = null;
+            var postUpdateReadyIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--post-update-ready", StringComparison.OrdinalIgnoreCase));
+            if (postUpdateReadyIndex >= 0 && postUpdateReadyIndex + 1 < e.Args.Length)
+            {
+                postUpdateReadyMarker = Path.GetFullPath(e.Args[postUpdateReadyIndex + 1]);
+            }
             var exportCommandsIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--export-command-lines", StringComparison.OrdinalIgnoreCase));
             if (exportCommandsIndex >= 0 && exportCommandsIndex + 1 < e.Args.Length)
             {
@@ -54,6 +78,29 @@ public partial class App : System.Windows.Application
                 await File.WriteAllTextAsync(e.Args[parityTestIndex + 1], report);
                 var status = _controller.Status;
                 Shutdown(status.EngineRunning && status.DriverActive && status.StrategyApplied && status.ConnectivityVerified ? 0 : 5);
+                return;
+            }
+            var runtimeStrategyIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--runtime-strategy", StringComparison.OrdinalIgnoreCase));
+            if (runtimeStrategyIndex >= 0 && runtimeStrategyIndex + 4 < e.Args.Length)
+            {
+                var strategyId = e.Args[runtimeStrategyIndex + 1];
+                var mode = Enum.Parse<IpSetMode>(e.Args[runtimeStrategyIndex + 2], true);
+                var gameFilter = bool.Parse(e.Args[runtimeStrategyIndex + 3]);
+                var reportPath = Path.GetFullPath(e.Args[runtimeStrategyIndex + 4]);
+                EngineSnapshot? status = null;
+                try
+                {
+                    await _controller.ConfigureRuntimeAsync(new EngineRuntimeOptions(mode, gameFilter), false);
+                    status = await _controller.ApplyStrategyAsync(strategyId);
+                    var report = new { strategyId, mode, gameFilter, status };
+                    Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+                    await File.WriteAllTextAsync(reportPath, System.Text.Json.JsonSerializer.Serialize(report, JsonDefaults.Options));
+                }
+                finally
+                {
+                    await _controller.DisableAsync();
+                }
+                Shutdown(status is { EngineRunning: true, DriverActive: true, StrategyApplied: true } ? 0 : 11);
                 return;
             }
             var manualStrategyIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--manual-strategy", StringComparison.OrdinalIgnoreCase));
@@ -87,6 +134,21 @@ public partial class App : System.Windows.Application
                     await _controller.DisableAsync();
                 }
                 Shutdown(status is { EngineRunning: true, DriverActive: true, StrategyApplied: true } ? 0 : 6);
+                return;
+            }
+            var cachedAutoIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--cached-auto-test", StringComparison.OrdinalIgnoreCase));
+            if (cachedAutoIndex >= 0 && cachedAutoIndex + 1 < e.Args.Length)
+            {
+                var reportPath = Path.GetFullPath(e.Args[cachedAutoIndex + 1]);
+                var messages = new List<string>();
+                var status = await _controller.EnableAsync(new Progress<string>(messages.Add), checkYouTube: true, checkDiscord: false, checkVoice: false);
+                await Task.Delay(100);
+                var fullOptimizationTriggered = messages.Any(message => message.StartsWith("Finding", StringComparison.OrdinalIgnoreCase));
+                var report = new { status, progress = messages, fullOptimizationTriggered, optimization = _controller.LastOptimization };
+                Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+                await File.WriteAllTextAsync(reportPath, System.Text.Json.JsonSerializer.Serialize(report, JsonDefaults.Options));
+                await _controller.DisableAsync();
+                Shutdown(status.EngineRunning && status.DriverActive && status.StrategyApplied && !fullOptimizationTriggered ? 0 : 12);
                 return;
             }
             var autoOptimizeIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--auto-optimize", StringComparison.OrdinalIgnoreCase));
@@ -130,10 +192,17 @@ public partial class App : System.Windows.Application
 
             _settingsService = new SettingsService();
             var settings = await _settingsService.LoadAsync();
+            var renderIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--render-ui", StringComparison.OrdinalIgnoreCase));
+            if (renderIndex >= 0) settings = settings with { AutoCheckUpdates = false };
+            await _controller.ConfigureRuntimeAsync(new EngineRuntimeOptions(
+                settings.IpSetMode,
+                settings.GameFilterEnabled,
+                settings.GameFilterTcp,
+                settings.GameFilterUdp), false,
+                settings.CheckYouTube, settings.CheckDiscord, settings.CheckVoice);
             Localization.Apply(settings.Language);
             var window = new MainWindow(_controller, _settingsService, settings);
             MainWindow = window;
-            var renderIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--render-ui", StringComparison.OrdinalIgnoreCase));
             if (renderIndex >= 0 && renderIndex + 1 < e.Args.Length)
             {
                 window.Show();
@@ -145,6 +214,11 @@ public partial class App : System.Windows.Application
             }
             if (!e.Args.Contains("--minimized", StringComparer.OrdinalIgnoreCase)) window.Show();
             if (settings.StartEnabled) await window.StartEnabledAsync();
+            if (postUpdateReadyMarker is not null)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(postUpdateReadyMarker)!);
+                await File.WriteAllTextAsync(postUpdateReadyMarker, AppVersion.Display);
+            }
         }
         catch (Exception exception)
         {

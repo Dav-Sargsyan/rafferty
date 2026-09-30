@@ -46,6 +46,20 @@ public sealed class ConnectivityTester : IDisposable
         return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
+    public async Task<IReadOnlyList<DiagnosticResult>> RunQuickHealthCheckAsync(
+        bool checkYouTube,
+        bool checkDiscord,
+        bool checkVoice,
+        CancellationToken cancellationToken = default)
+    {
+        var tasks = new List<Task<DiagnosticResult>>();
+        if (checkYouTube) tasks.Add(TestHttpAsync("https://www.youtube.com/generate_204", "youtube", "YouTube", cancellationToken));
+        if (checkDiscord) tasks.Add(TestHttpAsync("https://discord.com/api/v10/gateway", "discord-api", "Discord API", cancellationToken));
+        if (checkVoice) tasks.Add(TestStunAsync(cancellationToken));
+        if (tasks.Count == 0) throw new ArgumentException("Select at least one service for the health check.");
+        return await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
     public static ReachabilitySnapshot Summarize(IReadOnlyList<DiagnosticResult> results)
     {
         ServiceReachability State(params string[] ids)

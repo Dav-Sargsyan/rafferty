@@ -1,5 +1,8 @@
 using Rafferty.Core;
 using Rafferty.Shared;
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using Xunit;
 
 namespace Rafferty.Core.Tests;
@@ -164,5 +167,134 @@ public sealed class StrategyTests
         {
             Directory.Delete(directory, true);
         }
+    }
+
+    [Fact]
+    public void RuntimeTransformer_PreservesReferenceArgumentsByDefault()
+    {
+        string[] arguments = ["--wf-tcp=80,443,12", "--new", "--filter-tcp=12", "--ipset={lists}\\ipset-all.txt", "--dpi-desync=fake"];
+        Assert.Equal(arguments, StrategyRuntimeTransformer.Transform(arguments, new EngineRuntimeOptions()));
+    }
+
+    [Fact]
+    public void RuntimeTransformer_AppliesGameRangesAndIpSetModes()
+    {
+        string[] arguments =
+        [
+            "--wf-tcp=80,443,12", "--wf-udp=443,12",
+            "--new", "--filter-tcp=443", "--ipset={lists}\\ipset-all.txt", "--dpi-desync=fake",
+            "--new", "--filter-tcp=12", "--ipset={lists}\\ipset-all.txt", "--dpi-desync=syndata"
+        ];
+        var none = StrategyRuntimeTransformer.Transform(arguments, new(IpSetMode.None, true, "1024-65535", "2000-3000"));
+        Assert.Contains("--wf-tcp=80,443,1024-65535", none);
+        Assert.Contains("--wf-udp=443,2000-3000", none);
+        Assert.Contains("--filter-tcp=1024-65535", none);
+        Assert.DoesNotContain(none, argument => argument.StartsWith("--ipset="));
+        Assert.DoesNotContain("--filter-tcp=443", none);
+
+        var any = StrategyRuntimeTransformer.Transform(arguments, new(IpSetMode.Any, false));
+        Assert.Contains("--filter-tcp=443", any);
+        Assert.DoesNotContain(any, argument => argument.StartsWith("--ipset="));
+    }
+
+    [Fact]
+    public async Task UpdateService_ChecksVersionAndVerifiesDownloadedSha256()
+    {
+        var executable = Encoding.UTF8.GetBytes("verified executable");
+        var hash = Convert.ToHexString(SHA256.HashData(executable));
+        var manifest = $$"""
+            {"version":"1.3.0","downloadUrl":"https://updates.example/Rafferty.exe","sha256":"{{hash}}","releaseNotes":"Test","mandatory":false}
+            """;
+        using var client = new HttpClient(new StubHandler(request => request.RequestUri!.AbsolutePath.EndsWith("update.json")
+            ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(manifest) }
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(executable) }));
+        using var service = new UpdateService(client);
+        var check = await service.CheckAsync("https://updates.example/update.json", new Version(1, 2, 0));
+        Assert.True(check.UpdateAvailable);
+
+        var directory = Path.Combine(Path.GetTempPath(), "RaffertyTests", Guid.NewGuid().ToString("N"));
+        var destination = Path.Combine(directory, "Rafferty.new.exe");
+        try
+        {
+            await service.DownloadAsync(check.Manifest, destination);
+            Assert.Equal(executable, await File.ReadAllBytesAsync(destination));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task UpdateService_RejectsWrongHashAndKeepsDestinationAbsent()
+    {
+        var manifest = new UpdateManifest("9.0.0", "https://updates.example/Rafferty.exe", new string('0', 64), "Test");
+        using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(Encoding.UTF8.GetBytes("tampered"))
+        }));
+        using var service = new UpdateService(client);
+        var directory = Path.Combine(Path.GetTempPath(), "RaffertyTests", Guid.NewGuid().ToString("N"));
+        var destination = Path.Combine(directory, "Rafferty.new.exe");
+        try
+        {
+            await Assert.ThrowsAsync<InvalidDataException>(() => service.DownloadAsync(manifest, destination));
+            Assert.False(File.Exists(destination));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task UpdateInstaller_ReplacesExecutableAndKeepsRollbackCopyUntilCommit()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RaffertyTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var downloaded = Path.Combine(directory, "Rafferty.new.exe");
+        var target = Path.Combine(directory, "Rafferty.exe");
+        await File.WriteAllTextAsync(downloaded, "new version");
+        await File.WriteAllTextAsync(target, "old version");
+        try
+        {
+            var backup = await UpdateInstaller.ReplaceExecutableAsync(downloaded, target);
+            Assert.Equal("new version", await File.ReadAllTextAsync(target));
+            Assert.Equal("old version", await File.ReadAllTextAsync(backup));
+            UpdateInstaller.Commit(backup);
+            Assert.False(File.Exists(backup));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task UpdateInstaller_RollbackRestoresPreviousExecutable()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RaffertyTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        var downloaded = Path.Combine(directory, "Rafferty.new.exe");
+        var target = Path.Combine(directory, "Rafferty.exe");
+        await File.WriteAllTextAsync(downloaded, "new version");
+        await File.WriteAllTextAsync(target, "old version");
+        try
+        {
+            var backup = await UpdateInstaller.ReplaceExecutableAsync(downloaded, target);
+            UpdateInstaller.Rollback(target, backup);
+            Assert.Equal("old version", await File.ReadAllTextAsync(target));
+            Assert.False(File.Exists(backup));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    private sealed class StubHandler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(response(request));
     }
 }

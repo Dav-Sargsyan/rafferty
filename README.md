@@ -1,6 +1,6 @@
 # Rafferty
 
-Rafferty 1.2.0 is a self-contained native Windows application for applying and testing DPI-desynchronization profiles. The production UI is WPF/.NET; it starts the bundled `winws` engine directly with administrator rights and verifies that the WinDivert driver is actually active before reporting protection.
+Rafferty 1.3.0 is a self-contained native Windows application for applying and testing DPI-desynchronization profiles. The production UI is WPF/.NET; it starts the bundled `winws` engine directly with administrator rights and verifies that the WinDivert driver is actually active before reporting protection.
 
 ## Current capabilities
 
@@ -14,6 +14,7 @@ Rafferty 1.2.0 is a self-contained native Windows application for applying and t
 - sanitized JSON diagnostic export and rotating local logs;
 - Russian and English UI, tray integration and startup settings;
 - self-contained single-file `Rafferty.exe` publication.
+- cached Auto Mode with quick health checks, interactive IPSet/game filtering and SHA-256 verified self-update support.
 
 The React/Tauri files under `src` and `src-tauri` are retained as the earlier interface prototype. The shipped application is `Rafferty.UI`.
 
@@ -35,7 +36,7 @@ dotnet test Rafferty.Core.Tests\Rafferty.Core.Tests.csproj -c Release -p:Platfor
 Publish one self-contained executable:
 
 ```powershell
-dotnet publish Rafferty.UI\Rafferty.UI.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o Rafferty-1.2.0
+dotnet publish Rafferty.UI\Rafferty.UI.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o Rafferty-1.3.0
 ```
 
 Runtime network interception requires administrator rights. Do not disable antivirus or firewall protection globally.
@@ -56,6 +57,7 @@ Rafferty.exe --auto-optimize auto-optimize.json
 ```
 
 See [PARITY_AUDIT.md](PARITY_AUDIT.md) for the reference comparison and the limits of local validation.
+See [AUTO_MODE_BEHAVIOR.md](AUTO_MODE_BEHAVIOR.md) for the exact cached-strategy and forced-optimization behavior.
 
 ## Reference and licensing
 

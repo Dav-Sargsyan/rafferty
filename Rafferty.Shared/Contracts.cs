@@ -76,6 +76,14 @@ public enum DiagnosticState
     NotTested
 }
 
+[JsonConverter(typeof(JsonStringEnumConverter<IpSetMode>))]
+public enum IpSetMode
+{
+    None,
+    Loaded,
+    Any
+}
+
 public sealed record DiagnosticResult(
     string Id,
     string Name,
@@ -120,5 +128,35 @@ public sealed record UserSettings(
     bool MinimizeToTray = true,
     bool CheckYouTube = true,
     bool CheckDiscord = true,
-    bool CheckVoice = true);
+    bool CheckVoice = true,
+    IpSetMode IpSetMode = IpSetMode.Loaded,
+    bool GameFilterEnabled = false,
+    string GameFilterTcp = "1024-65535",
+    string GameFilterUdp = "1024-65535",
+    bool AutoFindOnFailure = true,
+    bool RecheckOnStartup = false,
+    bool AutoCheckUpdates = true);
+
+public sealed record EngineRuntimeOptions(
+    IpSetMode IpSetMode = IpSetMode.Loaded,
+    bool GameFilterEnabled = false,
+    string GameFilterTcp = "1024-65535",
+    string GameFilterUdp = "1024-65535");
+
+public sealed record UpdateManifest(
+    string Version,
+    string DownloadUrl,
+    string Sha256,
+    string ReleaseNotes,
+    bool Mandatory = false);
+
+public sealed record UpdateCheckResult(
+    bool UpdateAvailable,
+    Version CurrentVersion,
+    Version LatestVersion,
+    UpdateManifest Manifest);
+
+public sealed record UpdateState(
+    DateTimeOffset? LastCheckedAt = null,
+    UpdateManifest? LatestManifest = null);
 

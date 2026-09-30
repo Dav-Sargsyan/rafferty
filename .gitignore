@@ -14,6 +14,7 @@ src-tauri/target/
 # Local publish outputs and superseded project copies
 /Rafferty-1.1.0/
 /Rafferty-1.2.0/
+/Rafferty-1.3.0/
 /Rafferty-Final/
 /Rafferty-Release/
 /publish-*/
