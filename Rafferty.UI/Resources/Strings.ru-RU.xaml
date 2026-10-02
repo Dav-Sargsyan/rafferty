@@ -82,6 +82,7 @@
     <sys:String x:Key="OpenDiagnostics">Откройте диагностику для подробностей</sys:String>
     <sys:String x:Key="FindingConfiguration">Поиск лучшей конфигурации…</sys:String>
     <sys:String x:Key="CheckingSavedConfiguration">Проверка сохранённой конфигурации…</sys:String>
+    <sys:String x:Key="TestingStrategy">Проверка {0}</sys:String>
     <sys:String x:Key="UsuallyMoment">Обычно это занимает несколько секунд</sys:String>
     <sys:String x:Key="CheckingServices">Проверяем YouTube, Discord и голосовую связь…</sys:String>
     <sys:String x:Key="DiagnosticsDescription">Реальные проверки DNS, TCP, HTTPS и UDP/STUN</sys:String>
@@ -95,6 +96,8 @@
     <sys:String x:Key="EngineAutomatic">Автоматически</sys:String>
     <sys:String x:Key="EngineClassic">Классический</sys:String>
     <sys:String x:Key="EngineNextGen">Новое поколение</sys:String>
+    <sys:String x:Key="EngineNew">Новый</sys:String>
+    <sys:String x:Key="EngineRestartRequired">Для смены движка требуется перезапуск обхода. Перезапустить сейчас?</sys:String>
     <sys:String x:Key="RawEngineCommand">Команда движка</sys:String>
     <sys:String x:Key="Mode">Режим</sys:String>
     <sys:String x:Key="AutomaticMode">Автоматический режим</sys:String>
@@ -147,6 +150,8 @@
     <sys:String x:Key="DownloadingUpdate">Скачивание обновления… {0:0}%</sys:String>
     <sys:String x:Key="InstallingUpdate">Установка обновления… Rafferty автоматически перезапустится.</sys:String>
     <sys:String x:Key="UpdateError">Не удалось обновить Rafferty: {0}</sys:String>
+    <sys:String x:Key="UpdateCheckFailed">Не удалось проверить обновление. Подробнее можно увидеть в журнале.</sys:String>
+    <sys:String x:Key="UpdateInstallFailed">Не удалось установить обновление. Подробнее можно увидеть в журнале.</sys:String>
     <sys:String x:Key="DomainCount">Доменов: {0}</sys:String>
     <sys:String x:Key="ApplyingRuntimeSettings">Применение параметров runtime…</sys:String>
     <sys:String x:Key="UpdateLater">Позже</sys:String>

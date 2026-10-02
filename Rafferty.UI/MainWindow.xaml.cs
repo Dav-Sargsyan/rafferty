@@ -45,6 +45,7 @@ public partial class MainWindow : Window
         _settingsService = settingsService;
         _settings = settings;
         InitializeComponent();
+        _updateService.Diagnostic += message => _ = _controller.LogUpdateAsync(message);
         CurrentVersionText.Text = AppVersion.Display;
         ApplySettingsToControls();
         _tray = CreateTrayIcon();
@@ -165,7 +166,8 @@ public partial class MainWindow : Window
             {
                 SetCheckingState();
                 status = _settings.ManualMode
-                    ? await _controller.ApplyStrategyAsync(_settings.ManualStrategyId, _lifetime.Token)
+                    ? await _controller.ApplyStrategyAsync(_settings.ManualStrategyId, _lifetime.Token,
+                        _settings.CheckYouTube, _settings.CheckDiscord, _settings.CheckVoice)
                     : await _controller.EnableAsync(
                         new Progress<string>(message => ActivityText.Text = LocalizeProgress(message)),
                         _lifetime.Token,
@@ -289,6 +291,7 @@ public partial class MainWindow : Window
     {
         if (message.StartsWith("Checking saved", StringComparison.OrdinalIgnoreCase)) return Localization.T("CheckingSavedConfiguration");
         if (message.StartsWith("Finding", StringComparison.OrdinalIgnoreCase)) return Localization.T("FindingConfiguration");
+        if (message.StartsWith("Testing ", StringComparison.OrdinalIgnoreCase)) return string.Format(Localization.T("TestingStrategy"), message[8..]);
         return message;
     }
 
@@ -363,6 +366,8 @@ public partial class MainWindow : Window
         };
         ModeSelector.SelectedIndex = _settings.ManualMode ? 1 : 0;
         EngineSelector.SelectedIndex = _settings.PreferredEngine switch { EngineType.Classic => 1, EngineType.NextGen => 2, _ => 0 };
+        DashboardEngineSelector.SelectedIndex = EngineSelector.SelectedIndex;
+        DashboardClassicStrategyPanel.Visibility = _settings.PreferredEngine == EngineType.Classic ? Visibility.Visible : Visibility.Collapsed;
         ManualStrategyPanel.Visibility = _settings.ManualMode ? Visibility.Visible : Visibility.Collapsed;
         LanguageSelector.SelectedIndex = Localization.Normalize(_settings.Language) == Localization.EnglishLanguage ? 1 : 0;
         _loadingSettings = false;
@@ -380,6 +385,7 @@ public partial class MainWindow : Window
             ManualMode = ModeSelector.SelectedIndex == 1,
             ManualStrategyId = SelectedStrategyId() ?? _settings.ManualStrategyId,
             PreferredEngine = EngineSelector.SelectedIndex switch { 1 => EngineType.Classic, 2 => EngineType.NextGen, _ => EngineType.Auto },
+            ClassicStrategyId = EngineSelector.SelectedIndex == 1 ? SelectedStrategyId() ?? _settings.ClassicStrategyId : _settings.ClassicStrategyId,
             CheckYouTube = CheckYouTubeBox.IsChecked == true,
             CheckDiscord = CheckDiscordBox.IsChecked == true,
             CheckVoice = CheckVoiceBox.IsChecked == true,
@@ -430,6 +436,20 @@ public partial class MainWindow : Window
         var selectedIndex = visible.ToList().FindIndex(strategy =>
             string.Equals(strategy.Id, selectedId, StringComparison.OrdinalIgnoreCase));
         StrategySelector.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
+
+        var classic = _strategies.Where(strategy => strategy.EngineType == EngineType.Classic).ToArray();
+        DashboardStrategySelector.Items.Clear();
+        foreach (var strategy in classic)
+        {
+            DashboardStrategySelector.Items.Add(new ComboBoxItem
+            {
+                Tag = strategy.Id,
+                Content = StrategyNames.DisplayName(strategy)
+            });
+        }
+        var dashboardIndex = classic.ToList().FindIndex(strategy =>
+            string.Equals(strategy.Id, _settings.ClassicStrategyId, StringComparison.OrdinalIgnoreCase));
+        DashboardStrategySelector.SelectedIndex = dashboardIndex >= 0 ? dashboardIndex : 0;
     }
 
     private EngineRuntimeOptions RuntimeOptionsFromSettings() => new(
@@ -468,11 +488,18 @@ public partial class MainWindow : Window
         SetBusy(true, $"Applying {StrategyNames.DisplayName(strategyId)}...");
         try
         {
-            _settings = _settings with { ManualMode = true, ManualStrategyId = strategyId };
+            var applied = _strategies.FirstOrDefault(strategy => string.Equals(strategy.Id, strategyId, StringComparison.OrdinalIgnoreCase));
+            _settings = _settings with
+            {
+                ManualMode = true,
+                ManualStrategyId = strategyId,
+                ClassicStrategyId = applied?.EngineType == EngineType.Classic ? strategyId : _settings.ClassicStrategyId
+            };
             ModeSelector.SelectedIndex = 1;
             ManualStrategyPanel.Visibility = Visibility.Visible;
             await _settingsService.SaveAsync(_settings, _lifetime.Token);
-            var status = await _controller.ApplyStrategyAsync(strategyId, _lifetime.Token);
+            var status = await _controller.ApplyStrategyAsync(strategyId, _lifetime.Token,
+                _settings.CheckYouTube, _settings.CheckDiscord, _settings.CheckVoice);
             UpdateStatus(status);
             ActivityText.Text = $"{StrategyNames.DisplayName(strategyId)}: Engine OK, WinDivert OK";
         }
@@ -500,11 +527,73 @@ public partial class MainWindow : Window
     {
         if (_loadingSettings) return;
         _loadingSettings = true;
+        DashboardEngineSelector.SelectedIndex = EngineSelector.SelectedIndex;
+        DashboardClassicStrategyPanel.Visibility = EngineSelector.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         PopulateStrategySelector();
         _loadingSettings = false;
         await SaveSettingsAsync();
         UpdateStatus(_controller.Status);
     }
+
+    private async void DashboardEngineSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingSettings) return;
+        var requested = DashboardEngineSelector.SelectedIndex switch { 1 => EngineType.Classic, 2 => EngineType.NextGen, _ => EngineType.Auto };
+        var restart = _status?.EngineRunning == true && requested != _settings.PreferredEngine;
+        if (restart)
+        {
+            var answer = System.Windows.MessageBox.Show(this, Localization.T("EngineRestartRequired"), Localization.T("AppName"),
+                MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (answer != MessageBoxResult.Yes)
+            {
+                _loadingSettings = true;
+                DashboardEngineSelector.SelectedIndex = _settings.PreferredEngine switch { EngineType.Classic => 1, EngineType.NextGen => 2, _ => 0 };
+                _loadingSettings = false;
+                return;
+            }
+        }
+
+        _loadingSettings = true;
+        EngineSelector.SelectedIndex = DashboardEngineSelector.SelectedIndex;
+        ModeSelector.SelectedIndex = requested == EngineType.Classic ? 1 : 0;
+        ManualStrategyPanel.Visibility = requested == EngineType.Classic ? Visibility.Visible : Visibility.Collapsed;
+        DashboardClassicStrategyPanel.Visibility = requested == EngineType.Classic ? Visibility.Visible : Visibility.Collapsed;
+        PopulateStrategySelector();
+        var classicStrategy = DashboardSelectedStrategyId() ?? _settings.ClassicStrategyId;
+        _settings = _settings with
+        {
+            PreferredEngine = requested,
+            ManualMode = requested == EngineType.Classic,
+            ManualStrategyId = requested == EngineType.Classic ? classicStrategy : _settings.ManualStrategyId,
+            ClassicStrategyId = classicStrategy
+        };
+        _loadingSettings = false;
+        await _settingsService.SaveAsync(_settings, _lifetime.Token);
+        UpdateStatus(_controller.Status);
+
+        if (restart)
+        {
+            UpdateStatus(await _controller.DisableAsync(_lifetime.Token));
+            await ToggleAsync();
+        }
+    }
+
+    private async void DashboardStrategySelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingSettings || DashboardSelectedStrategyId() is not { } strategyId) return;
+        _settings = _settings with { PreferredEngine = EngineType.Classic, ManualMode = true, ManualStrategyId = strategyId, ClassicStrategyId = strategyId };
+        _loadingSettings = true;
+        EngineSelector.SelectedIndex = 1;
+        ModeSelector.SelectedIndex = 1;
+        var matching = StrategySelector.Items.Cast<ComboBoxItem>().ToList().FindIndex(item => string.Equals(item.Tag as string, strategyId, StringComparison.OrdinalIgnoreCase));
+        if (matching >= 0) StrategySelector.SelectedIndex = matching;
+        _loadingSettings = false;
+        await _settingsService.SaveAsync(_settings, _lifetime.Token);
+        UpdateStatus(_controller.Status);
+    }
+
+    private string? DashboardSelectedStrategyId() =>
+        DashboardStrategySelector.SelectedItem is ComboBoxItem { Tag: string id } ? id : null;
 
     private async void LanguageSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -638,6 +727,8 @@ public partial class MainWindow : Window
     private async void SettingToggle_Click(object sender, RoutedEventArgs e)
     {
         if (_loadingSettings) return;
+        if (ReferenceEquals(sender, CheckDiscordBox) && CheckDiscordBox.IsChecked != true)
+            CheckVoiceBox.IsChecked = false;
         if (sender is ToggleButton toggle
             && (ReferenceEquals(toggle, CheckYouTubeBox) || ReferenceEquals(toggle, CheckDiscordBox) || ReferenceEquals(toggle, CheckVoiceBox))
             && CheckYouTubeBox.IsChecked != true && CheckDiscordBox.IsChecked != true && CheckVoiceBox.IsChecked != true)
@@ -806,7 +897,10 @@ public partial class MainWindow : Window
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             await _updateStateStore.SaveAsync(new(DateTimeOffset.UtcNow, state.LatestManifest), _lifetime.Token);
-            UpdateStatusText.Text = string.Format(Localization.T("UpdateError"), exception.Message);
+            await _controller.LogUpdateErrorAsync(exception.ToString(), _lifetime.Token);
+            UpdateStatusText.Text = exception is UpdateAssetNotFoundException
+                ? exception.Message
+                : Localization.T("UpdateCheckFailed");
         }
         finally { CheckUpdatesButton.IsEnabled = true; }
     }
@@ -848,7 +942,8 @@ public partial class MainWindow : Window
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            UpdateStatusText.Text = string.Format(Localization.T("UpdateError"), exception.Message);
+            await _controller.LogUpdateErrorAsync(exception.ToString(), _lifetime.Token);
+            UpdateStatusText.Text = Localization.T("UpdateInstallFailed");
             CheckUpdatesButton.IsEnabled = UpdateNowButton.IsEnabled = true;
             UpdateProgress.Visibility = Visibility.Collapsed;
         }

@@ -25,6 +25,12 @@ internal sealed class RaffertyController : IAsyncDisposable
     public string EngineWorkingDirectory => Engine.WorkingDirectory;
     public OptimizationResult? LastOptimization => _lastOptimization;
 
+    public Task LogUpdateAsync(string message, CancellationToken token = default) =>
+        _logger?.InfoAsync($"Updater: {message}", token) ?? Task.CompletedTask;
+
+    public Task LogUpdateErrorAsync(string message, CancellationToken token = default) =>
+        _logger?.ErrorAsync($"Updater: {message}", token) ?? Task.CompletedTask;
+
     public async Task InitializeAsync(CancellationToken token = default)
     {
         await RuntimeExtractor.EnsureAsync(token).ConfigureAwait(false);
@@ -47,26 +53,32 @@ internal sealed class RaffertyController : IAsyncDisposable
         bool recheckOnStartup = false,
         EngineType preferredEngine = EngineType.Auto)
     {
+        checkVoice &= checkDiscord;
         var state = await _stateStore.LoadAsync(token).ConfigureAwait(false);
-        if (!string.IsNullOrWhiteSpace(state?.ActiveStrategyId))
+        var savedStrategyId = state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId;
+        var savedEngine = state?.LastSuccessfulEngine is not null and not EngineType.Auto
+            ? state.LastSuccessfulEngine
+            : state?.ActiveEngine ?? EngineType.Auto;
+        if (!string.IsNullOrWhiteSpace(savedStrategyId))
         {
             try
             {
-                var saved = await _strategies!.GetAsync(state.ActiveStrategyId, token).ConfigureAwait(false);
-                if (preferredEngine != EngineType.Auto && saved.EngineType != preferredEngine) state = state with { ActiveStrategyId = null };
+                var saved = await _strategies!.GetAsync(savedStrategyId, token).ConfigureAwait(false);
+                if (preferredEngine != EngineType.Auto && saved.EngineType != preferredEngine) savedStrategyId = null;
             }
             catch (KeyNotFoundException)
             {
-                state = new RuntimeState(null, [], null, NetworkIdentity.GetCurrent());
+                state = new RuntimeState(null, [], null, NetworkIdentity.GetCurrent(), StrategyHistory: state?.StrategyHistory);
+                savedStrategyId = null;
                 await _stateStore.SaveAsync(state, token).ConfigureAwait(false);
             }
         }
-        if (!string.IsNullOrWhiteSpace(state?.ActiveStrategyId))
+        if (!string.IsNullOrWhiteSpace(savedStrategyId))
         {
             progress?.Report("Checking saved configuration…");
             try
             {
-                await Engine.StartAsync(state.ActiveStrategyId, _reachability, token).ConfigureAwait(false);
+                await Engine.StartAsync(savedStrategyId, _reachability, token).ConfigureAwait(false);
                 var quick = recheckOnStartup
                     ? await Tester.RunDiagnosticsAsync(token).ConfigureAwait(false)
                     : await Tester.RunQuickHealthCheckAsync(checkYouTube, checkDiscord, checkVoice, token).ConfigureAwait(false);
@@ -74,6 +86,16 @@ internal sealed class RaffertyController : IAsyncDisposable
                 Engine.SetConnectivityVerified(SelectedServicesWorking(quick, checkYouTube, checkDiscord, checkVoice));
                 if (SelectedServicesWorking(quick, checkYouTube, checkDiscord, checkVoice))
                 {
+                    state = (state ?? new RuntimeState(null, [], null)) with
+                    {
+                        ActiveStrategyId = savedStrategyId,
+                        ActiveEngine = Status.EngineType,
+                        LastSuccessfulStrategy = savedStrategyId,
+                        LastSuccessfulEngine = Status.EngineType,
+                        LastSuccessfulTest = DateTimeOffset.Now,
+                        StrategyHistory = MergeHistory(state?.StrategyHistory, [new(savedStrategyId, true, DateTimeOffset.Now)])
+                    };
+                    await _stateStore.SaveAsync(state, token).ConfigureAwait(false);
                     _recoveryStage = 0;
                     return Status;
                 }
@@ -83,6 +105,11 @@ internal sealed class RaffertyController : IAsyncDisposable
             {
                 await Engine.StopAsync(_reachability, token).ConfigureAwait(false);
             }
+            state = (state ?? new RuntimeState(null, [], null)) with
+            {
+                StrategyHistory = MergeHistory(state?.StrategyHistory, [new(savedStrategyId, false, DateTimeOffset.Now)])
+            };
+            await _stateStore.SaveAsync(state, token).ConfigureAwait(false);
             if (!autoFindOnFailure)
             {
                 throw new InvalidOperationException("The saved strategy did not pass the health check. Automatic strategy selection is disabled.");
@@ -90,22 +117,28 @@ internal sealed class RaffertyController : IAsyncDisposable
         }
 
         progress?.Report("Finding the best configuration…");
+        var history = state?.StrategyHistory ?? [];
+        var recentSuccess = history.Where(item => item.Success).OrderByDescending(item => item.LastTested).Select(item => item.StrategyId);
+        var priorityIds = (state?.BackupStrategyIds ?? []).Concat(recentSuccess).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var recentFailures = history.Where(item => !item.Success && item.LastTested > DateTimeOffset.Now.AddDays(-7)).Select(item => item.StrategyId).ToArray();
         var result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine,
-            firstAutoEngine: state?.ActiveEngine ?? EngineType.Auto,
-            priorityStrategyIds: state?.BackupStrategyIds).ConfigureAwait(false);
+            firstAutoEngine: savedEngine,
+            priorityStrategyIds: priorityIds,
+            deprioritizedStrategyIds: recentFailures).ConfigureAwait(false);
         _lastOptimization = result;
         if (!result.Success || string.IsNullOrWhiteSpace(result.SelectedStrategyId))
         {
             throw new InvalidOperationException(result.Message);
         }
 
-        var diagnostics = await Tester.RunDiagnosticsAsync(token).ConfigureAwait(false);
-        _reachability = ConnectivityTester.Summarize(diagnostics);
-        Engine.SetConnectivityVerified(SelectedServicesWorking(diagnostics, checkYouTube, checkDiscord, checkVoice));
+        var selectedScore = result.Scores.Last(score => string.Equals(score.StrategyId, result.SelectedStrategyId, StringComparison.OrdinalIgnoreCase));
+        _reachability = ReachabilityFromScore(selectedScore);
+        Engine.SetConnectivityVerified(true);
         var backups = result.Scores.OrderByDescending(score => score.Score)
             .Where(score => !string.Equals(score.StrategyId, result.SelectedStrategyId, StringComparison.OrdinalIgnoreCase))
             .Take(3).Select(score => score.StrategyId).ToArray();
-        await _stateStore.SaveAsync(new(result.SelectedStrategyId, backups, DateTimeOffset.Now, NetworkIdentity.GetCurrent(), Status.EngineType), token).ConfigureAwait(false);
+        await _stateStore.SaveAsync(new(result.SelectedStrategyId, backups, DateTimeOffset.Now, NetworkIdentity.GetCurrent(), Status.EngineType,
+            result.SelectedStrategyId, Status.EngineType, MergeHistory(history, HistoryFromScores(result.Scores))), token).ConfigureAwait(false);
         _recoveryStage = 0;
         return Status;
     }
@@ -163,17 +196,28 @@ internal sealed class RaffertyController : IAsyncDisposable
     public Task<string> GetCommandLineAsync(string strategyId, CancellationToken token = default) =>
         Engine.GetCommandLineAsync(strategyId, false, token);
 
-    public async Task<EngineSnapshot> ApplyStrategyAsync(string strategyId, CancellationToken token = default)
+    public async Task<EngineSnapshot> ApplyStrategyAsync(
+        string strategyId,
+        CancellationToken token = default,
+        bool checkYouTube = true,
+        bool checkDiscord = true,
+        bool checkVoice = true)
     {
+        checkVoice &= checkDiscord;
         var strategy = await _strategies!.GetAsync(strategyId, token).ConfigureAwait(false);
         await Engine.StopAsync(_reachability, token).ConfigureAwait(false);
         try
         {
             await Engine.StartAsync(strategy.Id, ReachabilitySnapshot.Unknown, token).ConfigureAwait(false);
-            var diagnostics = await Tester.RunDiagnosticsAsync(token).ConfigureAwait(false);
+            var diagnostics = await Tester.RunQuickHealthCheckAsync(checkYouTube, checkDiscord, checkVoice, token).ConfigureAwait(false);
             _reachability = ConnectivityTester.Summarize(diagnostics);
-            Engine.SetConnectivityVerified(CriticalChecksPassed(diagnostics));
-            await _stateStore.SaveAsync(new(strategy.Id, [], DateTimeOffset.Now, NetworkIdentity.GetCurrent(), strategy.EngineType), token).ConfigureAwait(false);
+            var verified = SelectedServicesWorking(diagnostics, checkYouTube, checkDiscord, checkVoice);
+            Engine.SetConnectivityVerified(verified);
+            var previous = await _stateStore.LoadAsync(token).ConfigureAwait(false);
+            await _stateStore.SaveAsync(new(strategy.Id, [], DateTimeOffset.Now, NetworkIdentity.GetCurrent(), strategy.EngineType,
+                verified ? strategy.Id : previous?.LastSuccessfulStrategy,
+                verified ? strategy.EngineType : previous?.LastSuccessfulEngine ?? EngineType.Auto,
+                MergeHistory(previous?.StrategyHistory, [new(strategy.Id, verified, DateTimeOffset.Now)])), token).ConfigureAwait(false);
             return Status;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -192,15 +236,20 @@ internal sealed class RaffertyController : IAsyncDisposable
         EngineType preferredEngine = EngineType.Auto,
         bool deepSearch = true)
     {
+        checkVoice &= checkDiscord;
         await Engine.StopAsync(_reachability, token).ConfigureAwait(false);
-        await _stateStore.SaveAsync(new(null, [], null), token).ConfigureAwait(false);
+        var previous = await _stateStore.LoadAsync(token).ConfigureAwait(false);
+        await _stateStore.SaveAsync((previous ?? new RuntimeState(null, [], null)) with { ActiveStrategyId = null, BackupStrategyIds = [] }, token).ConfigureAwait(false);
         if (deepSearch)
         {
             var result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine, deepSearch: true).ConfigureAwait(false);
             _lastOptimization = result;
             if (!result.Success || string.IsNullOrWhiteSpace(result.SelectedStrategyId)) throw new InvalidOperationException(result.Message);
             var strategy = await _strategies!.GetAsync(result.SelectedStrategyId, token).ConfigureAwait(false);
-            await _stateStore.SaveAsync(new(strategy.Id, [], DateTimeOffset.Now, NetworkIdentity.GetCurrent(), strategy.EngineType), token).ConfigureAwait(false);
+            var selectedScore = result.Scores.Last(score => string.Equals(score.StrategyId, strategy.Id, StringComparison.OrdinalIgnoreCase));
+            _reachability = ReachabilityFromScore(selectedScore);
+            await _stateStore.SaveAsync(new(strategy.Id, [], DateTimeOffset.Now, NetworkIdentity.GetCurrent(), strategy.EngineType,
+                strategy.Id, strategy.EngineType, MergeHistory(previous?.StrategyHistory, HistoryFromScores(result.Scores))), token).ConfigureAwait(false);
             return Status;
         }
         return await EnableAsync(progress, token, checkYouTube, checkDiscord, checkVoice, autoFindOnFailure: true, preferredEngine: preferredEngine).ConfigureAwait(false);
@@ -365,6 +414,26 @@ internal sealed class RaffertyController : IAsyncDisposable
         return (!checkYouTube || summary.YouTube == ServiceReachability.Working)
             && (!checkDiscord || summary.Discord == ServiceReachability.Working)
             && (!checkVoice || summary.DiscordVoice == ServiceReachability.Working);
+    }
+
+    private static ReachabilitySnapshot ReachabilityFromScore(StrategyScore score) => new(
+        ServiceReachability.NotTested, score.YouTube, score.Discord, score.Voice, DateTimeOffset.Now);
+
+    private static IReadOnlyList<StrategyHistoryEntry> HistoryFromScores(IEnumerable<StrategyScore> scores) =>
+        scores.Select(score => new StrategyHistoryEntry(score.StrategyId,
+            score.EngineStarted && score.DriverActive && score.Errors == 0
+                && score.YouTube is ServiceReachability.Working or ServiceReachability.NotTested
+                && score.Discord is ServiceReachability.Working or ServiceReachability.NotTested
+                && score.Voice is ServiceReachability.Working or ServiceReachability.NotTested,
+            DateTimeOffset.Now)).ToArray();
+
+    private static IReadOnlyList<StrategyHistoryEntry> MergeHistory(
+        IReadOnlyList<StrategyHistoryEntry>? existing,
+        IEnumerable<StrategyHistoryEntry> updates)
+    {
+        var merged = (existing ?? []).ToDictionary(item => item.StrategyId, StringComparer.OrdinalIgnoreCase);
+        foreach (var update in updates) merged[update.StrategyId] = update;
+        return merged.Values.OrderByDescending(item => item.LastTested).Take(64).ToArray();
     }
 
     private BypassEngineManager Engine => _engine ?? throw new InvalidOperationException("Rafferty is not initialized.");

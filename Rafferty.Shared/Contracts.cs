@@ -145,7 +145,8 @@ public sealed record UserSettings(
     bool AutoFindOnFailure = true,
     bool RecheckOnStartup = false,
     bool AutoCheckUpdates = true,
-    EngineType PreferredEngine = EngineType.Auto);
+    EngineType PreferredEngine = EngineType.Auto,
+    string ClassicStrategyId = "general");
 
 public sealed record EngineRuntimeOptions(
     IpSetMode IpSetMode = IpSetMode.Loaded,

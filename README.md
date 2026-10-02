@@ -1,6 +1,6 @@
 # Rafferty
 
-Rafferty 1.4.0 is a self-contained native Windows application for applying and testing DPI-desynchronization profiles. The native WPF/.NET UI can run either the bundled Classic `winws` engine or the Next-gen `winws2`/Lua engine and verifies that WinDivert is active before reporting protection.
+Rafferty 1.4.1 is a self-contained native Windows application for applying and testing DPI-desynchronization profiles. The native WPF/.NET UI can run either the bundled Classic `winws` engine or the Next-gen `winws2`/Lua engine and verifies that WinDivert is active before reporting protection.
 
 ## Current capabilities
 
@@ -15,7 +15,9 @@ Rafferty 1.4.0 is a self-contained native Windows application for applying and t
 - sanitized JSON diagnostic export and rotating local logs;
 - Russian and English UI, tray integration and startup settings;
 - self-contained single-file `Rafferty.exe` publication.
-- cached Auto Mode with quick health checks, interactive IPSet/game filtering and SHA-256 verified self-update support.
+- cached Auto Mode with early exit and selected-service quick checks;
+- GitHub Releases API updates with exact asset discovery and SHA-256 verification;
+- interactive IPSet/game filtering and direct Dashboard engine/Classic strategy selection.
 
 The shipped desktop application is the WPF project under `Rafferty.UI`; the network and strategy logic lives in `Rafferty.Core` and shared contracts in `Rafferty.Shared`.
 
@@ -37,7 +39,7 @@ dotnet test Rafferty.Core.Tests\Rafferty.Core.Tests.csproj -c Release -p:Platfor
 Publish one self-contained executable:
 
 ```powershell
-dotnet publish Rafferty.UI\Rafferty.UI.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o Rafferty-1.4.0
+dotnet publish Rafferty.UI\Rafferty.UI.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o Rafferty-1.4.1
 ```
 
 Runtime network interception requires administrator rights. Do not disable antivirus or firewall protection globally.

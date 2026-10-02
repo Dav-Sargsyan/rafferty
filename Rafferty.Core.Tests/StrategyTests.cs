@@ -34,6 +34,7 @@ public sealed class StrategyTests
         Assert.Equal(3, candidates.Count(strategy => strategy.EngineType == EngineType.NextGen));
         Assert.Equal(EngineType.NextGen, OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen)[0].EngineType);
         Assert.Equal("next-5", OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen, ["next-5"])[0].Id);
+        Assert.NotEqual("next-5", OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen, ["next-5"], ["next-5"])[0].Id);
         Assert.Equal(6, OptimizationEngine.OrderCandidates(strategies, EngineType.NextGen, deepSearch: false).Count);
         Assert.Equal(16, OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, deepSearch: true).Count);
     }
@@ -252,6 +253,64 @@ public sealed class StrategyTests
         {
             if (Directory.Exists(directory)) Directory.Delete(directory, true);
         }
+    }
+
+    [Fact]
+    public async Task UpdateService_UsesGitHubReleaseAssetAndAcceptsVTag()
+    {
+        var hash = new string('a', 64);
+        var release = $$"""
+            {"tag_name":"v1.4.1","html_url":"https://github.com/example/releases/tag/v1.4.1","body":"Fixes","assets":[
+              {"name":"Rafferty.exe","browser_download_url":"https://github.com/example/releases/download/v1.4.1/Rafferty.exe","digest":"sha256:{{hash}}"}
+            ]}
+            """;
+        using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(release) }));
+        using var service = new UpdateService(client);
+        var log = new List<string>();
+        service.Diagnostic += log.Add;
+
+        var result = await service.CheckAsync("https://api.github.com/repos/example/app/releases/latest", new Version(1, 4, 0));
+
+        Assert.True(result.UpdateAvailable);
+        Assert.Equal(new Version(1, 4, 1), result.LatestVersion);
+        Assert.EndsWith("/v1.4.1/Rafferty.exe", result.Manifest.DownloadUrl);
+        Assert.Contains(log, line => line.StartsWith("Update check URL:"));
+        Assert.Contains(log, line => line.StartsWith("Release URL:"));
+        Assert.Contains(log, line => line.StartsWith("Asset URL:"));
+    }
+
+    [Fact]
+    public async Task UpdateService_ReportsMissingAssetClearly()
+    {
+        const string release = """
+            {"tag_name":"v1.4.1","html_url":"https://github.com/example/releases/tag/v1.4.1","body":"Fixes","assets":[
+              {"name":"checksums.txt","browser_download_url":"https://github.com/example/checksums.txt","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+            ]}
+            """;
+        using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(release) }));
+        using var service = new UpdateService(client);
+
+        var error = await Assert.ThrowsAsync<UpdateAssetNotFoundException>(() =>
+            service.CheckAsync("https://api.github.com/repos/example/app/releases/latest"));
+
+        Assert.Equal("В релизе v1.4.1 не найден файл Rafferty.exe.", error.Message);
+    }
+
+    [Fact]
+    public async Task UpdateService_DoesNotRetryHttp404()
+    {
+        var requests = 0;
+        using var client = new HttpClient(new StubHandler(_ =>
+        {
+            requests++;
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+        using var service = new UpdateService(client);
+
+        await Assert.ThrowsAsync<UpdateRequestException>(() =>
+            service.CheckAsync("https://api.github.com/repos/example/app/releases/latest"));
+
+        Assert.Equal(1, requests);
     }
 
     [Fact]

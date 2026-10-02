@@ -15,7 +15,12 @@ internal sealed class SettingsService
         try
         {
             var settings = await _store.LoadAsync(token).ConfigureAwait(false) ?? new UserSettings();
-            return settings with { Language = Localization.Normalize(settings.Language) };
+            var classicStrategy = settings.PreferredEngine == EngineType.Classic
+                && settings.ClassicStrategyId == "general"
+                && settings.ManualStrategyId != "general"
+                    ? settings.ManualStrategyId
+                    : settings.ClassicStrategyId;
+            return settings with { Language = Localization.Normalize(settings.Language), ClassicStrategyId = classicStrategy };
         }
         catch (Exception exception) when (exception is IOException or System.Text.Json.JsonException)
         {

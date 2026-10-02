@@ -3,7 +3,7 @@
 Rafferty keeps the existing Classic engine behavior and adds an isolated
 Next-gen runtime based on official zapret2 v1.0.5.2.
 
-- Runtime extraction: `%LOCALAPPDATA%\Rafferty\runtime\1.4.0-dual-engine\classic`
+- Runtime extraction: `%LOCALAPPDATA%\Rafferty\runtime\1.4.1-dual-engine\classic`
   and `nextgen`.
 - Classic executable: `winws.exe`.
 - Next-gen executable: `winws2.exe`, with matching `zapret-lib.lua` and

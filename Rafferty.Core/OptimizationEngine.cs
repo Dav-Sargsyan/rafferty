@@ -27,31 +27,36 @@ public sealed class OptimizationEngine
         EngineType preferredEngine = EngineType.Auto,
         bool deepSearch = false,
         EngineType firstAutoEngine = EngineType.Auto,
-        IReadOnlyList<string>? priorityStrategyIds = null)
+        IReadOnlyList<string>? priorityStrategyIds = null,
+        IReadOnlyList<string>? deprioritizedStrategyIds = null)
     {
+        checkVoice &= checkDiscord;
         if (!checkYouTube && !checkDiscord && !checkVoice)
         {
             throw new ArgumentException("Select at least one service to test during optimization.");
         }
 
-        var baseline = await _tester.RunDiagnosticsAsync(cancellationToken).ConfigureAwait(false);
+        IReadOnlyList<DiagnosticResult> baseline = [];
         var allCandidates = (await _strategies.LoadAsync(cancellationToken).ConfigureAwait(false)).Strategies;
-        var candidates = OrderCandidates(allCandidates, preferredEngine, deepSearch, firstAutoEngine, priorityStrategyIds);
+        var candidates = OrderCandidates(allCandidates, preferredEngine, deepSearch, firstAutoEngine, priorityStrategyIds, deprioritizedStrategyIds);
         var scores = new List<StrategyScore>();
-        var workingCandidates = 0;
+        var testedStrategies = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        await _engine.StopAsync(ConnectivityTester.Summarize(baseline), cancellationToken).ConfigureAwait(false);
-        foreach (var strategy in candidates)
+        await _engine.StopAsync(ReachabilitySnapshot.Unknown, cancellationToken).ConfigureAwait(false);
+        for (var candidateIndex = 0; candidateIndex < candidates.Count; candidateIndex++)
         {
+            var strategy = candidates[candidateIndex];
+            if (!testedStrategies.Add(strategy.Id)) continue;
             cancellationToken.ThrowIfCancellationRequested();
             var displayName = StrategyNames.DisplayName(strategy);
-            progress?.Report($"Testing {displayName}...");
+            progress?.Report($"Testing {displayName} — {candidateIndex + 1}/{candidates.Count}");
             var startup = Stopwatch.StartNew();
+            var keepRunning = false;
             try
             {
                 var snapshot = await _engine.StartAsync(strategy.Id, ReachabilitySnapshot.Unknown, cancellationToken).ConfigureAwait(false);
                 startup.Stop();
-                var results = await _tester.RunDiagnosticsAsync(cancellationToken).ConfigureAwait(false);
+                var results = await _tester.RunQuickHealthCheckAsync(checkYouTube, checkDiscord, checkVoice, cancellationToken).ConfigureAwait(false);
                 var score = StrategyScorer.Calculate(strategy.Id, results, startup.Elapsed, checkYouTube, checkDiscord, checkVoice) with
                 {
                     EngineStarted = snapshot.EngineRunning,
@@ -62,7 +67,11 @@ public sealed class OptimizationEngine
                 await _logger.InfoAsync($"Strategy test {displayName}: engine=OK driver=OK YouTube={score.YouTube} Discord={score.Discord} Voice={score.Voice} score={score.Score:F1}", cancellationToken).ConfigureAwait(false);
                 if (RequiredServicesMatch(score, ServiceReachability.Working, checkYouTube, checkDiscord, checkVoice))
                 {
-                    workingCandidates++;
+                    keepRunning = true;
+                    _engine.SetConnectivityVerified(true);
+                    await _logger.SuccessAsync($"Fast optimization selected {strategy.Id} after {testedStrategies.Count} candidate(s).", cancellationToken).ConfigureAwait(false);
+                    return new(true, snapshot.StrategyId, scores, baseline,
+                        $"Selected {displayName} after {testedStrategies.Count}/{candidates.Count} checks.");
                 }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -74,13 +83,11 @@ public sealed class OptimizationEngine
             }
             finally
             {
-                await _engine.StopAsync(ReachabilitySnapshot.Unknown, cancellationToken).ConfigureAwait(false);
-                await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
-            }
-            if (workingCandidates >= 3)
-            {
-                progress?.Report("Three working strategies found; selecting the best result.");
-                break;
+                if (!keepRunning)
+                {
+                    await _engine.StopAsync(ReachabilitySnapshot.Unknown, cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
+                }
             }
         }
 
@@ -90,21 +97,10 @@ public sealed class OptimizationEngine
             .ThenBy(score => score.AverageLatencyMs)
             .ToArray();
         var best = ordered.FirstOrDefault();
-        if (best is null || RequiredServiceUnavailable(best, checkYouTube, checkDiscord, checkVoice))
-        {
-            var reason = best is null
-                ? "Every strategy failed to start the engine or WinDivert."
-                : $"No strategy restored every selected service. Best result: {StrategyNames.DisplayName(best.StrategyId)}; YouTube={best.YouTube}; Discord={best.Discord}; Voice={best.Voice}.";
-            return new(false, best?.StrategyId, scores, baseline, reason);
-        }
-
-        progress?.Report($"Applying {StrategyNames.DisplayName(best.StrategyId)}...");
-        var selected = await _engine.StartAsync(best.StrategyId, ReachabilitySnapshot.Unknown, cancellationToken).ConfigureAwait(false);
-        var verification = await _tester.RunDiagnosticsAsync(cancellationToken).ConfigureAwait(false);
-        _engine.SetConnectivityVerified(SelectedServicesWorking(verification, checkYouTube, checkDiscord, checkVoice));
-        await _logger.SuccessAsync($"Optimization selected {best.StrategyId} with score {best.Score}.", cancellationToken).ConfigureAwait(false);
-        return new(true, selected.StrategyId, scores, baseline,
-            $"Selected {StrategyNames.DisplayName(best.StrategyId)} (YouTube={best.YouTube}, Discord={best.Discord}, Voice={best.Voice}, score={best.Score:F1}).");
+        var reason = deepSearch
+            ? "Расширенный поиск не нашёл полностью рабочую стратегию."
+            : "Быстрый поиск не нашёл полностью рабочую стратегию. Запустите расширенный поиск вручную.";
+        return new(false, best?.StrategyId, scores, baseline, reason);
     }
 
     public static IReadOnlyList<Strategy> OrderCandidates(
@@ -112,14 +108,18 @@ public sealed class OptimizationEngine
         EngineType preferredEngine,
         bool deepSearch,
         EngineType firstAutoEngine = EngineType.Auto,
-        IReadOnlyList<string>? priorityStrategyIds = null)
+        IReadOnlyList<string>? priorityStrategyIds = null,
+        IReadOnlyList<string>? deprioritizedStrategyIds = null)
     {
         IEnumerable<Strategy> filtered = preferredEngine == EngineType.Auto
             ? strategies
             : strategies.Where(strategy => strategy.EngineType == preferredEngine);
         var priority = (priorityStrategyIds ?? []).Distinct(StringComparer.OrdinalIgnoreCase).Select((id, index) => (id, index))
             .ToDictionary(item => item.id, item => item.index, StringComparer.OrdinalIgnoreCase);
-        filtered = filtered.OrderBy(strategy => priority.TryGetValue(strategy.Id, out var index) ? index : int.MaxValue);
+        var failed = (deprioritizedStrategyIds ?? []).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        filtered = filtered
+            .OrderBy(strategy => failed.Contains(strategy.Id))
+            .ThenBy(strategy => priority.TryGetValue(strategy.Id, out var index) ? index : int.MaxValue);
         if (deepSearch) return filtered.ToArray();
 
         if (preferredEngine != EngineType.Auto) return filtered.Take(6).ToArray();
@@ -130,23 +130,10 @@ public sealed class OptimizationEngine
             : classic.Concat(nextGen).Take(8).ToArray();
     }
 
-    private static bool SelectedServicesWorking(IReadOnlyList<DiagnosticResult> results, bool checkYouTube, bool checkDiscord, bool checkVoice)
-    {
-        var summary = ConnectivityTester.Summarize(results);
-        return (!checkYouTube || summary.YouTube == ServiceReachability.Working)
-            && (!checkDiscord || summary.Discord == ServiceReachability.Working)
-            && (!checkVoice || summary.DiscordVoice == ServiceReachability.Working);
-    }
-
     private static bool RequiredServicesMatch(StrategyScore score, ServiceReachability expected, bool checkYouTube, bool checkDiscord, bool checkVoice) =>
         (!checkYouTube || score.YouTube == expected)
         && (!checkDiscord || score.Discord == expected)
         && (!checkVoice || score.Voice == expected);
-
-    private static bool RequiredServiceUnavailable(StrategyScore score, bool checkYouTube, bool checkDiscord, bool checkVoice) =>
-        (checkYouTube && score.YouTube == ServiceReachability.Unavailable)
-        || (checkDiscord && score.Discord == ServiceReachability.Unavailable)
-        || (checkVoice && score.Voice == ServiceReachability.Unavailable);
 
 }
 

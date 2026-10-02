@@ -174,7 +174,7 @@ public class EngineManager : IBypassEngine
 
             // Prefer winws' own capture-ready signal. The timeout covers builds that do not
             // print it, after which process and driver state are still verified explicitly.
-            await Task.WhenAny(startupReady.Task, Task.Delay(TimeSpan.FromSeconds(3), cancellationToken)).ConfigureAwait(false);
+            await Task.WhenAny(startupReady.Task, Task.Delay(TimeSpan.FromSeconds(2), cancellationToken)).ConfigureAwait(false);
             if (process.HasExited)
             {
                 throw new InvalidOperationException($"{_executableName} failed during startup (exit code {process.ExitCode}). Check engine.log.");

@@ -54,3 +54,14 @@ The **Run optimization** button always stops the active engine, clears the saved
   automatic recovery to that engine.
 - The explicit Re-optimize action is the only normal UI path that performs the
   deeper strategy search.
+
+## Fast search from version 1.4.1
+
+- Only enabled services are checked, in parallel, once per candidate.
+- The first candidate that restores every enabled service wins immediately.
+- Normal automatic search is bounded to three candidates per engine; a full
+  strategy scan is available only from the explicit optimization button.
+- Recent successes are tried first and failures from the last seven days are
+  moved behind untested candidates without being blocked permanently.
+- `state.json` keeps the last successful engine/strategy and up to 64 recent
+  strategy results.

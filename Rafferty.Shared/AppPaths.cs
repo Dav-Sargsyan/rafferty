@@ -4,11 +4,12 @@ public static class AppPaths
 {
     public const string PipeName = "Rafferty";
     public const string ServiceName = "Rafferty.Service";
-    public const string RuntimeVersion = "1.4.0-dual-engine";
+    public const string RuntimeVersion = "1.4.1-dual-engine";
     public const string ClassicEngineVersion = "zapret1-ref-249a704";
     public const string NextGenEngineVersion = "zapret2-v1.0.5.2";
     public const string StrategyPackVersion = "dual-2026.10.01";
-    public const string UpdateManifestUrl = "https://github.com/Dav-Sargsyan/rafferty/releases/latest/download/update.json";
+    public const string UpdateReleaseApiUrl = "https://api.github.com/repos/Dav-Sargsyan/rafferty/releases/latest";
+    public const string UpdateAssetName = "Rafferty.exe";
 
     public static string UserDataRoot => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
