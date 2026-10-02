@@ -4,5 +4,6 @@ public sealed record RuntimeState(
     string? ActiveStrategyId,
     IReadOnlyList<string> BackupStrategyIds,
     DateTimeOffset? LastSuccessfulTest,
-    string? LastNetworkId = null);
+    string? LastNetworkId = null,
+    Rafferty.Shared.EngineType ActiveEngine = Rafferty.Shared.EngineType.Auto);
 

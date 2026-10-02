@@ -1,10 +1,11 @@
 # Rafferty
 
-Rafferty 1.3.0 is a self-contained native Windows application for applying and testing DPI-desynchronization profiles. The production UI is WPF/.NET; it starts the bundled `winws` engine directly with administrator rights and verifies that the WinDivert driver is actually active before reporting protection.
+Rafferty 1.4.0 is a self-contained native Windows application for applying and testing DPI-desynchronization profiles. The native WPF/.NET UI can run either the bundled Classic `winws` engine or the Next-gen `winws2`/Lua engine and verifies that WinDivert is active before reporting protection.
 
 ## Current capabilities
 
-- 22 complete profiles synchronized from the pinned upstream reference revision;
+- 22 Classic profiles plus 6 prepared Next-gen profiles;
+- automatic, Classic-only and Next-gen-only engine selection with cached fallback;
 - complete ordered multi-rule chains, including every `--new` section;
 - bundled WinDivert runtime, payloads, host lists and IP sets;
 - SHA-256 verification and automatic restoration of embedded runtime files;
@@ -36,7 +37,7 @@ dotnet test Rafferty.Core.Tests\Rafferty.Core.Tests.csproj -c Release -p:Platfor
 Publish one self-contained executable:
 
 ```powershell
-dotnet publish Rafferty.UI\Rafferty.UI.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o Rafferty-1.3.0
+dotnet publish Rafferty.UI\Rafferty.UI.csproj -c Release -r win-x64 --self-contained true -p:Platform=x64 -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o Rafferty-1.4.0
 ```
 
 Runtime network interception requires administrator rights. Do not disable antivirus or firewall protection globally.
@@ -61,6 +62,6 @@ See [AUTO_MODE_BEHAVIOR.md](AUTO_MODE_BEHAVIOR.md) for the exact cached-strategy
 
 ## Reference and licensing
 
-Strategy definitions and redistributed runtime assets are synchronized from the pinned official `Flowseal/zapret-discord-youtube` revision documented in `PARITY_AUDIT.md`. Their original legal notices are retained under `licenses` and summarized in [THIRD_PARTY.md](THIRD_PARTY.md).
+Classic strategy definitions and runtime assets are synchronized from the pinned `Flowseal/zapret-discord-youtube` revision. Next-gen binaries and Lua files come from the official `bol-van/zapret2` v1.0.5.2 release. Checksums and notices are retained under `engine`, `engine-nextgen`, and `licenses`, and summarized in [THIRD_PARTY.md](THIRD_PARTY.md).
 
 The bundled third-party files keep their respective upstream licenses. No separate open-source license is granted for the original Rafferty source unless a license file is added later.

@@ -173,7 +173,8 @@ public partial class MainWindow : Window
                         _settings.CheckDiscord,
                         _settings.CheckVoice,
                         _settings.AutoFindOnFailure,
-                        _settings.RecheckOnStartup);
+                        _settings.RecheckOnStartup,
+                        _settings.PreferredEngine);
                 ActivityText.Text = Localization.T("ConnectionOptimized");
                 if (_settings.Notifications && status.DriverActive && status.StrategyApplied && status.ConnectivityVerified)
                     _tray.ShowBalloonTip(1200, Localization.T("AppName"), Localization.T("ConnectionProtected"), Forms.ToolTipIcon.Info);
@@ -203,7 +204,9 @@ public partial class MainWindow : Window
                 _lifetime.Token,
                 _settings.CheckYouTube,
                 _settings.CheckDiscord,
-                _settings.CheckVoice);
+                _settings.CheckVoice,
+                _settings.PreferredEngine,
+                deepSearch: true);
             ActivityText.Text = Localization.T("ConnectionOptimized");
             UpdateStatus(status);
         }
@@ -302,9 +305,17 @@ public partial class MainWindow : Window
         PowerButton.Background = active ? new SolidColorBrush(WpfColor.FromRgb(36, 74, 67)) : new SolidColorBrush(WpfColor.FromRgb(23, 26, 37));
         PowerButton.BorderBrush = active ? SuccessBrush : new SolidColorBrush(WpfColor.FromRgb(81, 71, 154));
         StrategyText.Text = StrategyNames.DisplayName(status.StrategyId ?? _settings.ManualStrategyId);
-        ModeText.Text = Localization.T(_settings.ManualMode ? "ManualMode" : "AutomaticMode");
+        var visibleEngine = status.EngineType switch
+        {
+            EngineType.Classic => Localization.T("EngineClassic"),
+            EngineType.NextGen => Localization.T("EngineNextGen"),
+            _ => Localization.T("EngineAutomatic")
+        };
+        ModeText.Text = $"{Localization.T(_settings.ManualMode ? "ManualMode" : "AutomaticMode")} • {visibleEngine}";
         AdvancedStrategyText.Text = StrategyNames.DisplayName(status.StrategyId ?? SelectedStrategyId() ?? _settings.ManualStrategyId);
-        AdvancedEngineText.Text = active ? "Running" : "Stopped";
+        var engineName = status.EngineType switch { EngineType.NextGen => "Next-gen (winws2)", EngineType.Classic => "Classic (winws)", _ => Localization.T("EngineAutomatic") };
+        AdvancedEngineText.Text = $"{engineName} • {(active ? "Running" : "Stopped")}";
+        AdvancedLuaText.Text = status.EngineType == EngineType.NextGen ? "zapret-lib + antidpi" : "—";
         AdvancedDriverText.Text = status.DriverActive ? "Loaded" : "Not loaded";
         AdvancedPidText.Text = status.ProcessId?.ToString() ?? "—";
         AdvancedWorkingDirectoryText.Text = _controller.EngineWorkingDirectory;
@@ -351,6 +362,7 @@ public partial class MainWindow : Window
             _ => 1
         };
         ModeSelector.SelectedIndex = _settings.ManualMode ? 1 : 0;
+        EngineSelector.SelectedIndex = _settings.PreferredEngine switch { EngineType.Classic => 1, EngineType.NextGen => 2, _ => 0 };
         ManualStrategyPanel.Visibility = _settings.ManualMode ? Visibility.Visible : Visibility.Collapsed;
         LanguageSelector.SelectedIndex = Localization.Normalize(_settings.Language) == Localization.EnglishLanguage ? 1 : 0;
         _loadingSettings = false;
@@ -367,6 +379,7 @@ public partial class MainWindow : Window
             Notifications = NotificationsToggle.IsChecked == true,
             ManualMode = ModeSelector.SelectedIndex == 1,
             ManualStrategyId = SelectedStrategyId() ?? _settings.ManualStrategyId,
+            PreferredEngine = EngineSelector.SelectedIndex switch { 1 => EngineType.Classic, 2 => EngineType.NextGen, _ => EngineType.Auto },
             CheckYouTube = CheckYouTubeBox.IsChecked == true,
             CheckDiscord = CheckDiscordBox.IsChecked == true,
             CheckVoice = CheckVoiceBox.IsChecked == true,
@@ -396,8 +409,17 @@ public partial class MainWindow : Window
             ? await _controller.ReloadStrategiesAsync(_lifetime.Token)
             : await _controller.GetStrategiesAsync(_lifetime.Token);
         _loadingSettings = true;
+        PopulateStrategySelector();
+        _loadingSettings = false;
+    }
+
+    private void PopulateStrategySelector()
+    {
+        var selectedId = SelectedStrategyId() ?? _settings.ManualStrategyId;
+        var preferred = EngineSelector.SelectedIndex switch { 1 => EngineType.Classic, 2 => EngineType.NextGen, _ => EngineType.Auto };
+        var visible = _strategies.Where(strategy => preferred == EngineType.Auto || strategy.EngineType == preferred).ToArray();
         StrategySelector.Items.Clear();
-        foreach (var strategy in _strategies)
+        foreach (var strategy in visible)
         {
             StrategySelector.Items.Add(new ComboBoxItem
             {
@@ -405,10 +427,9 @@ public partial class MainWindow : Window
                 Content = StrategyNames.DisplayName(strategy)
             });
         }
-        var selectedIndex = _strategies.ToList().FindIndex(strategy =>
-            string.Equals(strategy.Id, _settings.ManualStrategyId, StringComparison.OrdinalIgnoreCase));
+        var selectedIndex = visible.ToList().FindIndex(strategy =>
+            string.Equals(strategy.Id, selectedId, StringComparison.OrdinalIgnoreCase));
         StrategySelector.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
-        _loadingSettings = false;
     }
 
     private EngineRuntimeOptions RuntimeOptionsFromSettings() => new(
@@ -471,6 +492,16 @@ public partial class MainWindow : Window
     {
         if (_loadingSettings) return;
         ManualStrategyPanel.Visibility = ModeSelector.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        await SaveSettingsAsync();
+        UpdateStatus(_controller.Status);
+    }
+
+    private async void EngineSelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingSettings) return;
+        _loadingSettings = true;
+        PopulateStrategySelector();
+        _loadingSettings = false;
         await SaveSettingsAsync();
         UpdateStatus(_controller.Status);
     }

@@ -7,13 +7,15 @@ public sealed class StrategyStore
 {
     private readonly string _path;
     private readonly string? _customPath;
+    private readonly string? _nextGenPath;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private StrategyDatabase? _cache;
 
-    public StrategyStore(string path, string? customPath = null)
+    public StrategyStore(string path, string? customPath = null, string? nextGenPath = null)
     {
         _path = path;
         _customPath = customPath;
+        _nextGenPath = nextGenPath;
     }
 
     public async Task<StrategyDatabase> LoadAsync(CancellationToken cancellationToken = default)
@@ -82,6 +84,16 @@ public sealed class StrategyStore
     private async Task<StrategyDatabase> LoadMergedAsync(CancellationToken cancellationToken)
     {
         var bundled = await LoadFromDiskAsync(_path, cancellationToken).ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(_nextGenPath) && File.Exists(_nextGenPath))
+        {
+            var nextGen = await LoadFromDiskAsync(_nextGenPath, cancellationToken).ConfigureAwait(false);
+            bundled = bundled with
+            {
+                Source = $"{bundled.Source}; {nextGen.Source}",
+                UpdatedAt = bundled.UpdatedAt > nextGen.UpdatedAt ? bundled.UpdatedAt : nextGen.UpdatedAt,
+                Strategies = bundled.Strategies.Concat(nextGen.Strategies).ToArray()
+            };
+        }
         if (string.IsNullOrWhiteSpace(_customPath) || !File.Exists(_customPath)) return bundled;
         var custom = await LoadFromDiskAsync(_customPath, cancellationToken).ConfigureAwait(false);
         var customIds = custom.Strategies.Select(strategy => strategy.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);

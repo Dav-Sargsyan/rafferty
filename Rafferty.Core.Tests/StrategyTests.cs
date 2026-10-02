@@ -10,6 +10,35 @@ namespace Rafferty.Core.Tests;
 public sealed class StrategyTests
 {
     [Fact]
+    public void Strategy_DefaultsToClassicAndRejectsAutoEngine()
+    {
+        var classic = new Strategy("classic", "Classic", "", [], ["tcp"], [443], ["--filter-tcp=443"]);
+        Assert.Equal(EngineType.Classic, classic.EngineType);
+
+        var automatic = classic with { Id = "automatic", EngineType = EngineType.Auto };
+        Assert.Throws<InvalidDataException>(automatic.Validate);
+    }
+
+    [Fact]
+    public void AutoOptimization_UsesBoundedCandidatesFromBothEngines()
+    {
+        var strategies = Enumerable.Range(0, 8)
+            .Select(index => new Strategy($"classic-{index}", "Classic", "", [], ["tcp"], [443], ["--filter-tcp=443"]))
+            .Concat(Enumerable.Range(0, 8).Select(index => new Strategy($"next-{index}", "Next", "", [], ["tcp"], [443], ["--filter-tcp=443"], EngineType: EngineType.NextGen)))
+            .ToArray();
+
+        var candidates = OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, deepSearch: false);
+
+        Assert.Equal(6, candidates.Count);
+        Assert.Equal(3, candidates.Count(strategy => strategy.EngineType == EngineType.Classic));
+        Assert.Equal(3, candidates.Count(strategy => strategy.EngineType == EngineType.NextGen));
+        Assert.Equal(EngineType.NextGen, OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen)[0].EngineType);
+        Assert.Equal("next-5", OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen, ["next-5"])[0].Id);
+        Assert.Equal(6, OptimizationEngine.OrderCandidates(strategies, EngineType.NextGen, deepSearch: false).Count);
+        Assert.Equal(16, OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, deepSearch: true).Count);
+    }
+
+    [Fact]
     public void BatImporter_ConvertsWinwsCommandIntoStructuredStrategy()
     {
         const string bat = "\"%BIN%winws.exe\" --wf-tcp=80,443 ^\r\n--filter-tcp=443 --hostlist=\"%LISTS%list-google.txt\" --dpi-desync=multisplit --dpi-desync-split-pos=1";

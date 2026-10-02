@@ -91,6 +91,11 @@
     <sys:String x:Key="InitializationError">Не удалось запустить сетевой модуль Rafferty.</sys:String>
     <sys:String x:Key="SettingsErrorTitle">Настройки Rafferty</sys:String>
     <sys:String x:Key="Strategy">Стратегия</sys:String>
+    <sys:String x:Key="EngineChoice">Движок</sys:String>
+    <sys:String x:Key="EngineAutomatic">Автоматически</sys:String>
+    <sys:String x:Key="EngineClassic">Классический</sys:String>
+    <sys:String x:Key="EngineNextGen">Новое поколение</sys:String>
+    <sys:String x:Key="RawEngineCommand">Команда движка</sys:String>
     <sys:String x:Key="Mode">Режим</sys:String>
     <sys:String x:Key="AutomaticMode">Автоматический режим</sys:String>
     <sys:String x:Key="ManualMode">Ручной режим</sys:String>

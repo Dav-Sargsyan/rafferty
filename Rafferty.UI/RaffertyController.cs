@@ -13,7 +13,7 @@ internal sealed class RaffertyController : IAsyncDisposable
     private RotatingFileLogger? _logger;
     private StrategyStore? _strategies;
     private ConnectivityTester? _tester;
-    private EngineManager? _engine;
+    private BypassEngineManager? _engine;
     private OptimizationEngine? _optimizer;
     private ReachabilitySnapshot _reachability = ReachabilitySnapshot.Unknown;
     private OptimizationResult? _lastOptimization;
@@ -30,9 +30,9 @@ internal sealed class RaffertyController : IAsyncDisposable
         await RuntimeExtractor.EnsureAsync(token).ConfigureAwait(false);
         Directory.CreateDirectory(AppPaths.LogsDirectory);
         _logger = new RotatingFileLogger(AppPaths.LogsDirectory, "rafferty");
-        _strategies = new StrategyStore(AppPaths.StrategiesFile, AppPaths.CustomStrategiesFile);
+        _strategies = new StrategyStore(AppPaths.StrategiesFile, AppPaths.CustomStrategiesFile, AppPaths.NextGenStrategiesFile);
         _tester = new ConnectivityTester();
-        _engine = new EngineManager(_strategies, _logger);
+        _engine = new BypassEngineManager(_strategies, _logger);
         _optimizer = new OptimizationEngine(_strategies, _engine, _tester, _logger);
         _engine.UnexpectedExit += (_, _) => _ = RecoverAfterCrashAsync();
     }
@@ -44,12 +44,17 @@ internal sealed class RaffertyController : IAsyncDisposable
         bool checkDiscord = true,
         bool checkVoice = true,
         bool autoFindOnFailure = true,
-        bool recheckOnStartup = false)
+        bool recheckOnStartup = false,
+        EngineType preferredEngine = EngineType.Auto)
     {
         var state = await _stateStore.LoadAsync(token).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(state?.ActiveStrategyId))
         {
-            try { await _strategies!.GetAsync(state.ActiveStrategyId, token).ConfigureAwait(false); }
+            try
+            {
+                var saved = await _strategies!.GetAsync(state.ActiveStrategyId, token).ConfigureAwait(false);
+                if (preferredEngine != EngineType.Auto && saved.EngineType != preferredEngine) state = state with { ActiveStrategyId = null };
+            }
             catch (KeyNotFoundException)
             {
                 state = new RuntimeState(null, [], null, NetworkIdentity.GetCurrent());
@@ -85,7 +90,9 @@ internal sealed class RaffertyController : IAsyncDisposable
         }
 
         progress?.Report("Finding the best configuration…");
-        var result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice).ConfigureAwait(false);
+        var result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine,
+            firstAutoEngine: state?.ActiveEngine ?? EngineType.Auto,
+            priorityStrategyIds: state?.BackupStrategyIds).ConfigureAwait(false);
         _lastOptimization = result;
         if (!result.Success || string.IsNullOrWhiteSpace(result.SelectedStrategyId))
         {
@@ -98,7 +105,7 @@ internal sealed class RaffertyController : IAsyncDisposable
         var backups = result.Scores.OrderByDescending(score => score.Score)
             .Where(score => !string.Equals(score.StrategyId, result.SelectedStrategyId, StringComparison.OrdinalIgnoreCase))
             .Take(3).Select(score => score.StrategyId).ToArray();
-        await _stateStore.SaveAsync(new(result.SelectedStrategyId, backups, DateTimeOffset.Now, NetworkIdentity.GetCurrent()), token).ConfigureAwait(false);
+        await _stateStore.SaveAsync(new(result.SelectedStrategyId, backups, DateTimeOffset.Now, NetworkIdentity.GetCurrent(), Status.EngineType), token).ConfigureAwait(false);
         _recoveryStage = 0;
         return Status;
     }
@@ -166,7 +173,7 @@ internal sealed class RaffertyController : IAsyncDisposable
             var diagnostics = await Tester.RunDiagnosticsAsync(token).ConfigureAwait(false);
             _reachability = ConnectivityTester.Summarize(diagnostics);
             Engine.SetConnectivityVerified(CriticalChecksPassed(diagnostics));
-            await _stateStore.SaveAsync(new(strategy.Id, [], DateTimeOffset.Now, NetworkIdentity.GetCurrent()), token).ConfigureAwait(false);
+            await _stateStore.SaveAsync(new(strategy.Id, [], DateTimeOffset.Now, NetworkIdentity.GetCurrent(), strategy.EngineType), token).ConfigureAwait(false);
             return Status;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -181,11 +188,22 @@ internal sealed class RaffertyController : IAsyncDisposable
         CancellationToken token = default,
         bool checkYouTube = true,
         bool checkDiscord = true,
-        bool checkVoice = true)
+        bool checkVoice = true,
+        EngineType preferredEngine = EngineType.Auto,
+        bool deepSearch = true)
     {
         await Engine.StopAsync(_reachability, token).ConfigureAwait(false);
         await _stateStore.SaveAsync(new(null, [], null), token).ConfigureAwait(false);
-        return await EnableAsync(progress, token, checkYouTube, checkDiscord, checkVoice, autoFindOnFailure: true).ConfigureAwait(false);
+        if (deepSearch)
+        {
+            var result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine, deepSearch: true).ConfigureAwait(false);
+            _lastOptimization = result;
+            if (!result.Success || string.IsNullOrWhiteSpace(result.SelectedStrategyId)) throw new InvalidOperationException(result.Message);
+            var strategy = await _strategies!.GetAsync(result.SelectedStrategyId, token).ConfigureAwait(false);
+            await _stateStore.SaveAsync(new(strategy.Id, [], DateTimeOffset.Now, NetworkIdentity.GetCurrent(), strategy.EngineType), token).ConfigureAwait(false);
+            return Status;
+        }
+        return await EnableAsync(progress, token, checkYouTube, checkDiscord, checkVoice, autoFindOnFailure: true, preferredEngine: preferredEngine).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<DiagnosticResult>> RunDiagnosticsAsync(CancellationToken token = default)
@@ -222,7 +240,8 @@ internal sealed class RaffertyController : IAsyncDisposable
         var snapshot = Status;
         var persistedState = await _stateStore.LoadAsync(token).ConfigureAwait(false);
         var selectedStrategy = snapshot.StrategyId ?? persistedState?.ActiveStrategyId;
-        var version = FileVersionInfo.GetVersionInfo(AppPaths.EngineExecutable).FileVersion ?? "unknown";
+        var activeExecutable = snapshot.EngineType == EngineType.NextGen ? AppPaths.NextGenEngineExecutable : AppPaths.ClassicEngineExecutable;
+        var version = FileVersionInfo.GetVersionInfo(activeExecutable).FileVersion ?? "unknown";
         var lists = new List<object>();
         foreach (var file in Directory.GetFiles(AppPaths.ListsDirectory).OrderBy(Path.GetFileName))
         {
@@ -241,6 +260,10 @@ internal sealed class RaffertyController : IAsyncDisposable
             generatedAtUtc = DateTimeOffset.UtcNow,
             windows = Environment.OSVersion.VersionString,
             engineVersion = version,
+            engineType = snapshot.EngineType,
+            classicRuntimeVersion = AppPaths.ClassicEngineVersion,
+            nextGenRuntimeVersion = AppPaths.NextGenEngineVersion,
+            strategyPackVersion = AppPaths.StrategyPackVersion,
             referenceRevision = "249a70424aae2676f99c5363e21073ed89873eda",
             administrator = snapshot.IsAdministrator,
             driverActive = snapshot.DriverActive,
@@ -344,7 +367,7 @@ internal sealed class RaffertyController : IAsyncDisposable
             && (!checkVoice || summary.DiscordVoice == ServiceReachability.Working);
     }
 
-    private EngineManager Engine => _engine ?? throw new InvalidOperationException("Rafferty is not initialized.");
+    private BypassEngineManager Engine => _engine ?? throw new InvalidOperationException("Rafferty is not initialized.");
     private ConnectivityTester Tester => _tester ?? throw new InvalidOperationException("Rafferty is not initialized.");
     private OptimizationEngine Optimizer => _optimizer ?? throw new InvalidOperationException("Rafferty is not initialized.");
 

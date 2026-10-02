@@ -4,7 +4,23 @@ using Rafferty.Shared;
 
 namespace Rafferty.Core;
 
-public sealed class EngineManager : IAsyncDisposable
+public interface IBypassEngine : IAsyncDisposable
+{
+    event EventHandler? UnexpectedExit;
+    EngineType EngineType { get; }
+    string WorkingDirectory { get; }
+    EngineRuntimeOptions RuntimeOptions { get; }
+    void SetRuntimeOptions(EngineRuntimeOptions options);
+    EngineSnapshot Snapshot(ReachabilitySnapshot reachability);
+    void SetConnectivityVerified(bool verified);
+    Task<string> GetCommandLineAsync(string strategyId, bool sanitizePaths = false, CancellationToken token = default);
+    Task<EngineSnapshot> StartAsync(string strategyId, ReachabilitySnapshot reachability, CancellationToken cancellationToken = default);
+    Task<EngineSnapshot> StopAsync(ReachabilitySnapshot reachability, CancellationToken cancellationToken = default);
+    Task<EngineSnapshot> RestartAsync(ReachabilitySnapshot reachability, CancellationToken cancellationToken = default);
+    bool CanAutoRestart();
+}
+
+public class EngineManager : IBypassEngine
 {
     private readonly StrategyStore _strategies;
     private readonly RotatingFileLogger _logger;
@@ -21,16 +37,30 @@ public sealed class EngineManager : IAsyncDisposable
     private bool _connectivityVerified;
     private bool _stopping;
     private EngineRuntimeOptions _runtimeOptions = new();
+    private readonly EngineType _engineType;
+    private readonly string _workingDirectory;
+    private readonly string _executablePath;
+    private readonly string _executableName;
 
     public EngineManager(StrategyStore strategies, RotatingFileLogger logger)
+        : this(strategies, logger, EngineType.Classic, AppPaths.ClassicEngineDirectory, AppPaths.ClassicEngineExecutable, "winws.exe")
+    {
+    }
+
+    protected EngineManager(StrategyStore strategies, RotatingFileLogger logger, EngineType engineType, string workingDirectory, string executablePath, string executableName)
     {
         _strategies = strategies;
         _logger = logger;
+        _engineType = engineType;
+        _workingDirectory = workingDirectory;
+        _executablePath = executablePath;
+        _executableName = executableName;
     }
 
     public event EventHandler? UnexpectedExit;
 
-    public string WorkingDirectory => AppPaths.EngineDirectory;
+    public EngineType EngineType => _engineType;
+    public string WorkingDirectory => _workingDirectory;
     public EngineRuntimeOptions RuntimeOptions => _runtimeOptions;
 
     public void SetRuntimeOptions(EngineRuntimeOptions options) => _runtimeOptions = options;
@@ -48,17 +78,18 @@ public sealed class EngineManager : IAsyncDisposable
         DriverActive: _driverActive,
         StrategyApplied: _strategyApplied,
         ConnectivityVerified: _connectivityVerified,
-        CommandLine: _lastCommandLine);
+        CommandLine: _lastCommandLine,
+        EngineType: _engineType);
 
     public void SetConnectivityVerified(bool verified) => _connectivityVerified = verified;
 
     public async Task<string> GetCommandLineAsync(string strategyId, bool sanitizePaths = false, CancellationToken token = default)
     {
         var strategy = await _strategies.GetAsync(strategyId, token).ConfigureAwait(false);
-        var command = FormatCommandLine(AppPaths.EngineExecutable,
-            StrategyRuntimeTransformer.Transform(strategy.Arguments, _runtimeOptions).Select(ExpandArgument));
+        EnsureCompatible(strategy);
+        var command = FormatCommandLine(_executablePath, BuildArguments(strategy));
         return sanitizePaths
-            ? command.Replace(AppPaths.EngineDirectory, "{runtime}\\engine", StringComparison.OrdinalIgnoreCase)
+            ? command.Replace(_workingDirectory, $"{{runtime}}\\{_engineType.ToString().ToLowerInvariant()}", StringComparison.OrdinalIgnoreCase)
                 .Replace(AppPaths.ListsDirectory, "{runtime}\\lists", StringComparison.OrdinalIgnoreCase)
             : command;
     }
@@ -78,6 +109,7 @@ public sealed class EngineManager : IAsyncDisposable
             }
 
             var strategy = await _strategies.GetAsync(strategyId, cancellationToken).ConfigureAwait(false);
+            EnsureCompatible(strategy);
             if (!WindowsNetworkPrerequisites.IsAdministrator())
             {
                 throw new UnauthorizedAccessException("Administrator rights are required for the network filter.");
@@ -87,15 +119,14 @@ public sealed class EngineManager : IAsyncDisposable
                 throw new InvalidOperationException("Windows Base Filtering Engine (BFE) is not running.");
             }
             var executable = ResolveEngineExecutable();
-            await EngineIntegrity.VerifyAsync(AppPaths.EngineDirectory, cancellationToken).ConfigureAwait(false);
+            await EngineIntegrity.VerifyAsync(_workingDirectory, cancellationToken).ConfigureAwait(false);
             await _logger.InfoAsync(await WindowsNetworkPrerequisites.EnsureTcpTimestampsAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
-            var runtimeArguments = StrategyRuntimeTransformer.Transform(strategy.Arguments, _runtimeOptions);
-            var expandedArguments = runtimeArguments.Select(ExpandArgument).ToArray();
-            ValidateReferencedFiles(expandedArguments);
+            var expandedArguments = BuildArguments(strategy).ToArray();
+            ValidateReferencedFiles(expandedArguments, strategy);
             var startInfo = new ProcessStartInfo
             {
                 FileName = executable,
-                WorkingDirectory = AppPaths.EngineDirectory,
+                WorkingDirectory = _workingDirectory,
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
@@ -127,7 +158,7 @@ public sealed class EngineManager : IAsyncDisposable
             process.Exited += (_, _) => startupReady.TrySetResult();
             if (!process.Start())
             {
-                throw new InvalidOperationException("winws did not start.");
+                throw new InvalidOperationException($"{_executableName} did not start.");
             }
             _job.Add(process);
             process.BeginOutputReadLine();
@@ -146,14 +177,14 @@ public sealed class EngineManager : IAsyncDisposable
             await Task.WhenAny(startupReady.Task, Task.Delay(TimeSpan.FromSeconds(3), cancellationToken)).ConfigureAwait(false);
             if (process.HasExited)
             {
-                throw new InvalidOperationException($"winws failed during startup (exit code {process.ExitCode}). Check engine.log.");
+                throw new InvalidOperationException($"{_executableName} failed during startup (exit code {process.ExitCode}). Check engine.log.");
             }
             _driverActive = await WindowsNetworkPrerequisites.IsWinDivertRunningAsync(cancellationToken).ConfigureAwait(false);
             if (!_driverActive)
             {
                 process.Kill(true);
                 await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-                throw new InvalidOperationException("winws is running but the WinDivert driver is not active.");
+                throw new InvalidOperationException($"{_executableName} is running but the WinDivert driver is not active.");
             }
             _strategyApplied = true;
 
@@ -228,31 +259,55 @@ public sealed class EngineManager : IAsyncDisposable
 
     private string ResolveEngineExecutable()
     {
-        if (!File.Exists(AppPaths.EngineExecutable))
+        if (!File.Exists(_executablePath))
         {
-            throw new FileNotFoundException("winws.exe is not installed.", AppPaths.EngineExecutable);
+            throw new FileNotFoundException($"{_executableName} is not installed.", _executablePath);
         }
 
-        var root = Path.GetFullPath(AppPaths.EngineDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-        var executable = Path.GetFullPath(AppPaths.EngineExecutable);
-        if (!executable.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !string.Equals(Path.GetFileName(executable), "winws.exe", StringComparison.OrdinalIgnoreCase))
+        var root = Path.GetFullPath(_workingDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var executable = Path.GetFullPath(_executablePath);
+        if (!executable.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !string.Equals(Path.GetFileName(executable), _executableName, StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException("Unsafe engine executable path.");
         }
         return executable;
     }
 
-    private static string ExpandArgument(string argument) => argument
-        .Replace("{engine}", AppPaths.EngineDirectory, StringComparison.OrdinalIgnoreCase)
+    private string ExpandArgument(string argument) => argument
+        .Replace("{engine}", _workingDirectory, StringComparison.OrdinalIgnoreCase)
+        .Replace("{lua}", Path.Combine(_workingDirectory, "lua"), StringComparison.OrdinalIgnoreCase)
         .Replace("{lists}", AppPaths.ListsDirectory, StringComparison.OrdinalIgnoreCase);
 
-    private static void ValidateReferencedFiles(IEnumerable<string> arguments)
+    private IReadOnlyList<string> BuildArguments(Strategy strategy)
+    {
+        var arguments = new List<string>();
+        if (_engineType == EngineType.NextGen)
+        {
+            arguments.AddRange((strategy.LuaFiles ?? []).Select(file => $"--lua-init=@{Path.Combine(_workingDirectory, file)}"));
+        }
+        arguments.AddRange(StrategyRuntimeTransformer.Transform(strategy.Arguments, _runtimeOptions));
+        return arguments.Select(ExpandArgument).ToArray();
+    }
+
+    private void EnsureCompatible(Strategy strategy)
+    {
+        if (strategy.EngineType != _engineType)
+            throw new InvalidOperationException($"Strategy {strategy.Id} requires {strategy.EngineType}, not {_engineType}.");
+    }
+
+    private void ValidateReferencedFiles(IEnumerable<string> arguments, Strategy strategy)
     {
         var runtimeRoots = new[]
         {
-            Path.GetFullPath(AppPaths.EngineDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+            Path.GetFullPath(_workingDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
             Path.GetFullPath(AppPaths.ListsDirectory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar
         };
+        foreach (var relative in (strategy.LuaFiles ?? []).Concat(strategy.RequiredFiles ?? []))
+        {
+            var required = Path.GetFullPath(Path.Combine(_workingDirectory, relative));
+            if (!required.StartsWith(runtimeRoots[0], StringComparison.OrdinalIgnoreCase) || !File.Exists(required))
+                throw new FileNotFoundException($"Required strategy resource is missing: {relative}", required);
+        }
         foreach (var argument in arguments)
         {
             var separator = argument.IndexOf('=');
@@ -277,7 +332,7 @@ public sealed class EngineManager : IAsyncDisposable
             return;
         }
         _crashes.Enqueue(DateTimeOffset.Now);
-        _lastError = $"winws exited unexpectedly with code {_process?.ExitCode}.";
+        _lastError = $"{_executableName} exited unexpectedly with code {_process?.ExitCode}.";
         _driverActive = false;
         _strategyApplied = false;
         _connectivityVerified = false;
@@ -291,7 +346,7 @@ public sealed class EngineManager : IAsyncDisposable
         {
             return;
         }
-        _ = level == "ERROR" ? _logger.ErrorAsync($"winws: {message}") : _logger.InfoAsync($"winws: {message}");
+        _ = level == "ERROR" ? _logger.ErrorAsync($"{_executableName}: {message}") : _logger.InfoAsync($"{_executableName}: {message}");
     }
 
     private static string FormatCommandLine(string executable, IEnumerable<string> arguments) =>

@@ -22,9 +22,11 @@
     <ProjectReference Include="..\Rafferty.Core\Rafferty.Core.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="..\engine\**\*" LogicalName="Rafferty.Runtime/engine/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\engine\**\*" LogicalName="Rafferty.Runtime/classic/%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\engine-nextgen\**\*" LogicalName="Rafferty.Runtime/nextgen/%(RecursiveDir)%(Filename)%(Extension)" />
     <EmbeddedResource Include="..\lists\**\*" LogicalName="Rafferty.Runtime/lists/%(RecursiveDir)%(Filename)%(Extension)" />
     <EmbeddedResource Include="..\strategies\strategies.json" LogicalName="Rafferty.Runtime/strategies.json" />
+    <EmbeddedResource Include="..\strategies\nextgen-strategies.json" LogicalName="Rafferty.Runtime/nextgen-strategies.json" />
     <EmbeddedResource Include="..\licenses\**\*" LogicalName="Rafferty.Runtime/licenses/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

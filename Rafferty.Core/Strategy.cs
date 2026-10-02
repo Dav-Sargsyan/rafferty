@@ -1,3 +1,5 @@
+using Rafferty.Shared;
+
 namespace Rafferty.Core;
 
 public sealed record StrategyDatabase(
@@ -15,7 +17,10 @@ public sealed record Strategy(
     IReadOnlyList<int> Ports,
     IReadOnlyList<string> Arguments,
     bool Experimental = false,
-    string? Attribution = null)
+    string? Attribution = null,
+    EngineType EngineType = EngineType.Classic,
+    IReadOnlyList<string>? LuaFiles = null,
+    IReadOnlyList<string>? RequiredFiles = null)
 {
     public void Validate()
     {
@@ -32,6 +37,16 @@ public sealed record Strategy(
         if (Arguments.Any(argument => argument.Contains('\0')))
         {
             throw new InvalidDataException($"Strategy {Id} contains a null byte.");
+        }
+
+        if (EngineType == EngineType.Auto)
+        {
+            throw new InvalidDataException($"Strategy {Id} must target a concrete engine.");
+        }
+
+        if ((LuaFiles ?? []).Concat(RequiredFiles ?? []).Any(path => string.IsNullOrWhiteSpace(path) || Path.IsPathRooted(path) || path.Contains("..", StringComparison.Ordinal)))
+        {
+            throw new InvalidDataException($"Strategy {Id} contains an unsafe runtime resource path.");
         }
     }
 }

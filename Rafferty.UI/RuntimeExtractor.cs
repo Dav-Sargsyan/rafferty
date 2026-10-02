@@ -61,7 +61,7 @@ internal static class RuntimeExtractor
             File.Move(temporary, destination, true);
         }
 
-        if (!File.Exists(AppPaths.EngineExecutable) || !File.Exists(AppPaths.StrategiesFile))
+        if (!File.Exists(AppPaths.ClassicEngineExecutable) || !File.Exists(AppPaths.NextGenEngineExecutable) || !File.Exists(AppPaths.StrategiesFile))
         {
             throw new InvalidDataException("Embedded network runtime could not be extracted.");
         }

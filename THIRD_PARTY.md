@@ -27,7 +27,16 @@ from the application's About view.
 - `winws` is the Windows packet-filtering engine in the zapret family.
 
 If source or binaries are redistributed, the upstream MIT notice must accompany
-them. This repository currently redistributes neither.
+them. Rafferty redistributes the Classic `winws` runtime and retains the notice.
+
+## bol-van/zapret2
+
+- Upstream: <https://github.com/bol-van/zapret2>
+- Bundled release: `v1.0.5.2` (official Windows x86-64 release archive).
+- Bundled files: `winws2.exe`, matching `cygwin1.dll`, two Lua runtime scripts,
+  and the WinDivert runtime required on Windows.
+- Integrity: each bundled file is pinned in `engine-nextgen/engine-manifest.json`.
+- The upstream bol-van MIT notice is retained as `licenses/zapret2-LICENSE.txt`.
 
 ## bol-van/zapret-win-bundle
 
@@ -37,8 +46,8 @@ them. This repository currently redistributes neither.
 - The bundle contains components with different provenance. Treat every
   artifact according to its own upstream license and preserve notices.
 
-Rafferty requires an explicit external install step and does not vendor this
-bundle.
+Rafferty does not vendor the full bundle; only the minimal files required by
+the two embedded engines are shipped.
 
 ## WinDivert
 

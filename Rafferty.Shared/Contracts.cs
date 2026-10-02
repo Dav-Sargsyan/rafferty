@@ -2,6 +2,14 @@ using System.Text.Json.Serialization;
 
 namespace Rafferty.Shared;
 
+[JsonConverter(typeof(JsonStringEnumConverter<EngineType>))]
+public enum EngineType
+{
+    Auto,
+    Classic,
+    NextGen
+}
+
 [JsonConverter(typeof(JsonStringEnumConverter<PipeCommand>))]
 public enum PipeCommand
 {
@@ -42,7 +50,8 @@ public sealed record EngineSnapshot(
     bool DriverActive = false,
     bool StrategyApplied = false,
     bool ConnectivityVerified = false,
-    string? CommandLine = null);
+    string? CommandLine = null,
+    EngineType EngineType = EngineType.Classic);
 
 public sealed record ReachabilitySnapshot(
     ServiceReachability Internet,
@@ -135,7 +144,8 @@ public sealed record UserSettings(
     string GameFilterUdp = "1024-65535",
     bool AutoFindOnFailure = true,
     bool RecheckOnStartup = false,
-    bool AutoCheckUpdates = true);
+    bool AutoCheckUpdates = true,
+    EngineType PreferredEngine = EngineType.Auto);
 
 public sealed record EngineRuntimeOptions(
     IpSetMode IpSetMode = IpSetMode.Loaded,
@@ -148,7 +158,10 @@ public sealed record UpdateManifest(
     string DownloadUrl,
     string Sha256,
     string ReleaseNotes,
-    bool Mandatory = false);
+    bool Mandatory = false,
+    string? ClassicEngineVersion = null,
+    string? NextGenEngineVersion = null,
+    string? StrategyPackVersion = null);
 
 public sealed record UpdateCheckResult(
     bool UpdateAvailable,

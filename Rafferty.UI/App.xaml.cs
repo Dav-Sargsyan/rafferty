@@ -120,10 +120,14 @@ public partial class App : System.Windows.Application
                         status.EngineRunning,
                         status.DriverActive,
                         status.StrategyApplied,
+                        status.EngineType,
                         status.ProcessId,
                         status.CommandLine,
                         workingDirectory = _controller.EngineWorkingDirectory,
                         runtimeDirectory = _controller.RuntimeDirectory,
+                        luaRuntimeReady = status.EngineType != EngineType.NextGen ||
+                            (File.Exists(Path.Combine(_controller.EngineWorkingDirectory, "lua", "zapret-lib.lua")) &&
+                             File.Exists(Path.Combine(_controller.EngineWorkingDirectory, "lua", "zapret-antidpi.lua"))),
                         diagnostics
                     };
                     Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);

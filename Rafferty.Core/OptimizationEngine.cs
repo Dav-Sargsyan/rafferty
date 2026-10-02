@@ -6,11 +6,11 @@ namespace Rafferty.Core;
 public sealed class OptimizationEngine
 {
     private readonly StrategyStore _strategies;
-    private readonly EngineManager _engine;
+    private readonly IBypassEngine _engine;
     private readonly ConnectivityTester _tester;
     private readonly RotatingFileLogger _logger;
 
-    public OptimizationEngine(StrategyStore strategies, EngineManager engine, ConnectivityTester tester, RotatingFileLogger logger)
+    public OptimizationEngine(StrategyStore strategies, IBypassEngine engine, ConnectivityTester tester, RotatingFileLogger logger)
     {
         _strategies = strategies;
         _engine = engine;
@@ -23,7 +23,11 @@ public sealed class OptimizationEngine
         CancellationToken cancellationToken = default,
         bool checkYouTube = true,
         bool checkDiscord = true,
-        bool checkVoice = true)
+        bool checkVoice = true,
+        EngineType preferredEngine = EngineType.Auto,
+        bool deepSearch = false,
+        EngineType firstAutoEngine = EngineType.Auto,
+        IReadOnlyList<string>? priorityStrategyIds = null)
     {
         if (!checkYouTube && !checkDiscord && !checkVoice)
         {
@@ -31,7 +35,8 @@ public sealed class OptimizationEngine
         }
 
         var baseline = await _tester.RunDiagnosticsAsync(cancellationToken).ConfigureAwait(false);
-        var candidates = (await _strategies.LoadAsync(cancellationToken).ConfigureAwait(false)).Strategies;
+        var allCandidates = (await _strategies.LoadAsync(cancellationToken).ConfigureAwait(false)).Strategies;
+        var candidates = OrderCandidates(allCandidates, preferredEngine, deepSearch, firstAutoEngine, priorityStrategyIds);
         var scores = new List<StrategyScore>();
         var workingCandidates = 0;
 
@@ -100,6 +105,29 @@ public sealed class OptimizationEngine
         await _logger.SuccessAsync($"Optimization selected {best.StrategyId} with score {best.Score}.", cancellationToken).ConfigureAwait(false);
         return new(true, selected.StrategyId, scores, baseline,
             $"Selected {StrategyNames.DisplayName(best.StrategyId)} (YouTube={best.YouTube}, Discord={best.Discord}, Voice={best.Voice}, score={best.Score:F1}).");
+    }
+
+    public static IReadOnlyList<Strategy> OrderCandidates(
+        IReadOnlyList<Strategy> strategies,
+        EngineType preferredEngine,
+        bool deepSearch,
+        EngineType firstAutoEngine = EngineType.Auto,
+        IReadOnlyList<string>? priorityStrategyIds = null)
+    {
+        IEnumerable<Strategy> filtered = preferredEngine == EngineType.Auto
+            ? strategies
+            : strategies.Where(strategy => strategy.EngineType == preferredEngine);
+        var priority = (priorityStrategyIds ?? []).Distinct(StringComparer.OrdinalIgnoreCase).Select((id, index) => (id, index))
+            .ToDictionary(item => item.id, item => item.index, StringComparer.OrdinalIgnoreCase);
+        filtered = filtered.OrderBy(strategy => priority.TryGetValue(strategy.Id, out var index) ? index : int.MaxValue);
+        if (deepSearch) return filtered.ToArray();
+
+        if (preferredEngine != EngineType.Auto) return filtered.Take(6).ToArray();
+        var classic = filtered.Where(strategy => strategy.EngineType == EngineType.Classic).Take(3);
+        var nextGen = filtered.Where(strategy => strategy.EngineType == EngineType.NextGen).Take(3);
+        return firstAutoEngine == EngineType.NextGen
+            ? nextGen.Concat(classic).Take(8).ToArray()
+            : classic.Concat(nextGen).Take(8).ToArray();
     }
 
     private static bool SelectedServicesWorking(IReadOnlyList<DiagnosticResult> results, bool checkYouTube, bool checkDiscord, bool checkVoice)

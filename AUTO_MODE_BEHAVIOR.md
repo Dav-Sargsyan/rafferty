@@ -42,3 +42,15 @@ The **Run optimization** button always stops the active engine, clears the saved
 
 - `%LOCALAPPDATA%\Rafferty\config.json`: UI mode, manual strategy, selected service targets, runtime options and automatic-fallback settings.
 - `%LOCALAPPDATA%\Rafferty\state.json`: last successful automatic/manual strategy, backup candidates, test timestamp and network identity.
+
+## Dual-engine behavior from version 1.4.0
+
+- The cache stores the successful strategy together with `Classic` or `NextGen`.
+- Automatic mode tries that exact pair first and performs a quick health check.
+- If it fails, the bounded search tries up to three profiles from the same
+  engine and then up to three from the other engine. Each strategy id is tested
+  once per cycle and the search stops after enough working candidates are found.
+- Choosing Classic or Next-gen in Settings restricts both manual choices and
+  automatic recovery to that engine.
+- The explicit Re-optimize action is the only normal UI path that performs the
+  deeper strategy search.

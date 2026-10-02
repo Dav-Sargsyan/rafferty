@@ -8,10 +8,10 @@ namespace Rafferty.Service;
 public sealed class RecoveryWorker : BackgroundService
 {
     private readonly CommandDispatcher _dispatcher;
-    private readonly EngineManager _engine;
+    private readonly IBypassEngine _engine;
     private readonly Channel<RecoveryEvent> _events = Channel.CreateBounded<RecoveryEvent>(new BoundedChannelOptions(8) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
 
-    public RecoveryWorker(CommandDispatcher dispatcher, EngineManager engine)
+    public RecoveryWorker(CommandDispatcher dispatcher, IBypassEngine engine)
     {
         _dispatcher = dispatcher;
         _engine = engine;

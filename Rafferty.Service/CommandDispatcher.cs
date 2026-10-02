@@ -5,7 +5,7 @@ namespace Rafferty.Service;
 
 public sealed class CommandDispatcher
 {
-    private readonly EngineManager _engine;
+    private readonly IBypassEngine _engine;
     private readonly StrategyStore _strategies;
     private readonly ConnectivityTester _tester;
     private readonly OptimizationEngine _optimizer;
@@ -14,7 +14,7 @@ public sealed class CommandDispatcher
     private readonly SemaphoreSlim _operations = new(1, 1);
     private ReachabilitySnapshot _reachability = ReachabilitySnapshot.Unknown;
 
-    public CommandDispatcher(EngineManager engine, StrategyStore strategies, ConnectivityTester tester, OptimizationEngine optimizer, RotatingFileLogger logger)
+    public CommandDispatcher(IBypassEngine engine, StrategyStore strategies, ConnectivityTester tester, OptimizationEngine optimizer, RotatingFileLogger logger)
     {
         _engine = engine;
         _strategies = strategies;
@@ -146,6 +146,6 @@ public sealed class CommandDispatcher
     private PipeResponse Ok(string message, string? requestId) => new(true, message, Status, RequestId: requestId);
 
     private Task SaveRuntimeAsync(string strategyId, IReadOnlyList<string> backups, CancellationToken token) =>
-        _runtimeStore.SaveAsync(new(strategyId, backups, DateTimeOffset.Now, NetworkIdentity.GetCurrent()), token);
+        _runtimeStore.SaveAsync(new(strategyId, backups, DateTimeOffset.Now, NetworkIdentity.GetCurrent(), Status.EngineType), token);
 }
 
