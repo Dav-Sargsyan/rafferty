@@ -153,6 +153,20 @@ public sealed record StrategyScore(
     string? FailureReason = null,
     IReadOnlyDictionary<string, ServiceReachability>? TargetResults = null);
 
+/// <summary>
+/// A validated service profile, scoped to a non-identifying network fingerprint.
+/// Multiple entries can later be composed into one engine command.
+/// </summary>
+public sealed record ServiceStrategyResult(
+    string ServiceId,
+    EngineType Engine,
+    string StrategyFamily,
+    IReadOnlyList<string> Arguments,
+    string Protocol,
+    DateTimeOffset LastValidated,
+    string NetworkFingerprint,
+    double SuccessScore);
+
 public sealed record OptimizationResult(
     bool Success,
     string? SelectedStrategyId,
@@ -208,7 +222,8 @@ public sealed record EngineRuntimeOptions(
     string GameFilterTcp = "1024-65535",
     string GameFilterUdp = "1024-65535",
     IReadOnlyList<string>? EnabledServiceIds = null,
-    bool ReferenceCompatible = false);
+    bool ReferenceCompatible = false,
+    bool ClassicReferenceExact = false);
 
 public sealed record UpdateManifest(
     string Version,

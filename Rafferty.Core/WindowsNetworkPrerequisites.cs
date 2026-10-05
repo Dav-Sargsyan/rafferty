@@ -3,6 +3,19 @@ using System.Security.Principal;
 
 namespace Rafferty.Core;
 
+public enum TcpTimestampState
+{
+    Unknown,
+    Enabled,
+    Disabled
+}
+
+public sealed record WindowsNetworkPrerequisitesSnapshot(
+    bool IsAdministrator,
+    bool BaseFilteringEngineRunning,
+    TcpTimestampState TcpTimestamps,
+    IReadOnlyList<string> PotentiallyConflictingServices);
+
 public static class WindowsNetworkPrerequisites
 {
     public static bool IsAdministrator()
@@ -20,19 +33,44 @@ public static class WindowsNetworkPrerequisites
 
     public static async Task<string> EnsureTcpTimestampsAsync(CancellationToken token = default)
     {
-        var current = await RunAsync("netsh.exe", ["interface", "tcp", "show", "global"], token).ConfigureAwait(false);
-        var output = current.Output;
-        if (ContainsAny(output, "timestamps", "метки времени") && ContainsAny(output, "enabled", "включено", "включены"))
+        var current = await GetTcpTimestampStateAsync(token).ConfigureAwait(false);
+        if (current == TcpTimestampState.Enabled)
         {
             return "TCP timestamps already enabled.";
         }
-        if (ContainsAny(output, "timestamps", "метки времени") && ContainsAny(output, "disabled", "выключено", "отключено", "выключены"))
+        if (current == TcpTimestampState.Disabled)
         {
             var changed = await RunAsync("netsh.exe", ["interface", "tcp", "set", "global", "timestamps=enabled"], token).ConfigureAwait(false);
             if (changed.ExitCode != 0) throw new InvalidOperationException($"Could not enable TCP timestamps: {changed.Output}");
+            if (await GetTcpTimestampStateAsync(token).ConfigureAwait(false) != TcpTimestampState.Enabled)
+                throw new InvalidOperationException("TCP timestamps remained disabled after the compatibility setup.");
             return "TCP timestamps enabled for strategy compatibility.";
         }
         return "TCP timestamp state could not be identified; no system setting was changed.";
+    }
+
+    public static async Task<TcpTimestampState> GetTcpTimestampStateAsync(CancellationToken token = default)
+    {
+        var current = await RunAsync("netsh.exe", ["interface", "tcp", "show", "global"], token).ConfigureAwait(false);
+        var timestampLine = current.Output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault(line => ContainsAny(line, "timestamps", "метки времени"));
+        if (timestampLine is null) return TcpTimestampState.Unknown;
+        if (ContainsAny(timestampLine, "enabled", "включено", "включены")) return TcpTimestampState.Enabled;
+        if (ContainsAny(timestampLine, "disabled", "выключено", "отключено", "выключены")) return TcpTimestampState.Disabled;
+        return TcpTimestampState.Unknown;
+    }
+
+    public static async Task<WindowsNetworkPrerequisitesSnapshot> InspectAsync(CancellationToken token = default)
+    {
+        var conflicts = new List<string>();
+        foreach (var name in new[] { "IntelConnectivityNetworkService", "Intel Connectivity Network Service" })
+        {
+            var result = await RunAsync(Path.Combine(Environment.SystemDirectory, "sc.exe"), ["query", name], token).ConfigureAwait(false);
+            if (result.ExitCode == 0 && result.Output.Contains("RUNNING", StringComparison.OrdinalIgnoreCase))
+                conflicts.Add(name);
+        }
+        return new(IsAdministrator(), await IsBaseFilteringEngineRunningAsync(token).ConfigureAwait(false),
+            await GetTcpTimestampStateAsync(token).ConfigureAwait(false), conflicts);
     }
 
     private static bool ContainsAny(string value, params string[] needles) =>

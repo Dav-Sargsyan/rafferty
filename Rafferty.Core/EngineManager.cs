@@ -87,6 +87,7 @@ public class EngineManager : IBypassEngine
     {
         var strategy = await _strategies.GetAsync(strategyId, token).ConfigureAwait(false);
         EnsureCompatible(strategy);
+        await EnsureReferenceExactAsync(strategy, token).ConfigureAwait(false);
         var command = FormatCommandLine(_executablePath, BuildArguments(strategy));
         return sanitizePaths
             ? command.Replace(_workingDirectory, $"{{runtime}}\\{_engineType.ToString().ToLowerInvariant()}", StringComparison.OrdinalIgnoreCase)
@@ -110,6 +111,7 @@ public class EngineManager : IBypassEngine
 
             var strategy = await _strategies.GetAsync(strategyId, cancellationToken).ConfigureAwait(false);
             EnsureCompatible(strategy);
+            await EnsureReferenceExactAsync(strategy, cancellationToken).ConfigureAwait(false);
             if (!WindowsNetworkPrerequisites.IsAdministrator())
             {
                 throw new UnauthorizedAccessException("Administrator rights are required for the network filter.");
@@ -121,10 +123,10 @@ public class EngineManager : IBypassEngine
             var executable = ResolveEngineExecutable();
             await EngineIntegrity.VerifyAsync(_workingDirectory, cancellationToken).ConfigureAwait(false);
             await _logger.InfoAsync(await WindowsNetworkPrerequisites.EnsureTcpTimestampsAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
-            ServiceListManager.Apply(_runtimeOptions.ReferenceCompatible
+            ServiceListManager.Apply(IsReferenceExact
                 ? []
                 : _runtimeOptions.EnabledServiceIds ?? []);
-            if (!_runtimeOptions.ReferenceCompatible)
+            if (!IsReferenceExact)
             {
                 foreach (var targetId in _runtimeOptions.EnabledServiceIds ?? [])
                 {
@@ -302,13 +304,13 @@ public class EngineManager : IBypassEngine
         {
             arguments.AddRange((strategy.LuaFiles ?? []).Select(file => $"--lua-init=@{Path.Combine(_workingDirectory, file)}"));
         }
-        var runtimeArguments = _engineType == EngineType.Classic && _runtimeOptions.ReferenceCompatible
+        var runtimeArguments = _engineType == EngineType.Classic && IsReferenceExact
             ? strategy.Arguments
             : StrategyRuntimeTransformer.Transform(strategy.Arguments, _runtimeOptions);
-        var composed = _runtimeOptions.ReferenceCompatible
+        var composed = IsReferenceExact
             ? runtimeArguments
             : ServiceStrategyComposer.Compose(runtimeArguments, _engineType, _runtimeOptions.EnabledServiceIds);
-        if (!_runtimeOptions.ReferenceCompatible)
+        if (!IsReferenceExact)
         {
             foreach (var targetId in (_runtimeOptions.EnabledServiceIds ?? []).Distinct(StringComparer.OrdinalIgnoreCase))
             {
@@ -324,6 +326,19 @@ public class EngineManager : IBypassEngine
     {
         if (strategy.EngineType != _engineType)
             throw new InvalidOperationException($"Strategy {strategy.Id} requires {strategy.EngineType}, not {_engineType}.");
+    }
+
+    private bool IsReferenceExact => _engineType == EngineType.Classic
+        && (_runtimeOptions.ReferenceCompatible || _runtimeOptions.ClassicReferenceExact);
+
+    private async Task EnsureReferenceExactAsync(Strategy strategy, CancellationToken token)
+    {
+        if (!IsReferenceExact) return;
+        if (!string.Equals(strategy.Id, ClassicReferenceProfile.Alt3StrategyId, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Classic Reference Exact mode is pinned to the immutable ALT3 profile.");
+        var golden = await GoldenStrategyComparer.CompareAsync(strategy, AppPaths.GoldenClassicStrategiesFile, token).ConfigureAwait(false);
+        if (!golden.Match)
+            throw new InvalidDataException($"ALT3 differs from the pinned reference: {string.Join("; ", golden.Differences.Take(3))}");
     }
 
     private void ValidateReferencedFiles(IEnumerable<string> arguments, Strategy strategy)
@@ -350,6 +365,18 @@ public class EngineManager : IBypassEngine
                 throw new FileNotFoundException($"Required strategy resource is missing: {Path.GetFileName(fullPath)}", fullPath);
             }
         }
+        if (IsReferenceExact)
+        {
+            foreach (var name in ClassicReferenceProfile.RequiredEngineFiles)
+                EnsureRequiredFile(Path.Combine(_workingDirectory, name), name);
+            foreach (var name in ClassicReferenceProfile.RequiredListFiles)
+                EnsureRequiredFile(Path.Combine(AppPaths.ListsDirectory, name), name);
+        }
+    }
+
+    private static void EnsureRequiredFile(string path, string displayName)
+    {
+        if (!File.Exists(path)) throw new FileNotFoundException($"Required ALT3 reference resource is missing: {displayName}", path);
     }
 
     private static bool IsStartupReadyMessage(string? message) => message is not null &&

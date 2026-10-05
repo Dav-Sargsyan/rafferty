@@ -208,6 +208,10 @@ public sealed class StrategyTests
             Assert.Contains("chatgpt.com", first);
             Assert.DoesNotContain("blocked.example", first);
             Assert.DoesNotContain("instagram.com", first);
+            var general = File.ReadAllLines(Path.Combine(directory, "active-general-hostlist.txt"));
+            Assert.Contains("base.example", general);
+            Assert.DoesNotContain("chatgpt.com", general);
+            Assert.DoesNotContain("instagram.com", general);
 
             ServiceListManager.Apply(directory, [ServiceTargetCatalog.Instagram]);
             var second = File.ReadAllLines(Path.Combine(directory, "active-hostlist.txt"));
@@ -272,7 +276,7 @@ public sealed class StrategyTests
     {
         string[] arguments =
         [
-            "--filter-tcp=80,443", "--hostlist={lists}\\list-general.txt",
+            "--wf-tcp-out=80,443", "--wf-udp-out=443", "--filter-tcp=80,443", "--hostlist={lists}\\list-general.txt",
             "--hostlist={lists}\\list-general-user.txt", "--lua-desync=multisplit:pos=1,midsld",
             "--new", "--filter-udp=443", "--hostlist={lists}\\list-general.txt",
             "--lua-desync=fake:blob=fake_default_quic"
@@ -283,8 +287,10 @@ public sealed class StrategyTests
 
         Assert.Contains("--hostlist={lists}\\active-service-chatgpt.txt", composed);
         Assert.Contains("--hostlist={lists}\\active-service-tiktok.txt", composed);
-        Assert.Contains("--hostlist={lists}\\active-hostlist.txt", composed);
+        Assert.Contains("--hostlist={lists}\\active-general-hostlist.txt", composed);
         Assert.True(composed.Count(argument => argument == "--filter-udp=443") >= 2);
+        Assert.Equal(1, composed.Count(argument => argument == "--wf-tcp-out=80,443"));
+        Assert.Equal(1, composed.Count(argument => argument == "--wf-udp-out=443"));
     }
 
     [Theory]
@@ -337,6 +343,33 @@ public sealed class StrategyTests
         var summary = ServiceTargetCatalog.SummarizeTargets(results, [ServiceTargetCatalog.Telegram]);
 
         Assert.Equal(ServiceReachability.Degraded, summary[ServiceTargetCatalog.Telegram]);
+    }
+
+    [Fact]
+    public void ClassicReferenceAlt3_DeclaresEveryRequiredReferenceResource()
+    {
+        Assert.Equal("general--alt3", ClassicReferenceProfile.Alt3StrategyId);
+        Assert.Contains("winws.exe", ClassicReferenceProfile.RequiredEngineFiles);
+        Assert.Contains("WinDivert.dll", ClassicReferenceProfile.RequiredEngineFiles);
+        Assert.Contains("WinDivert64.sys", ClassicReferenceProfile.RequiredEngineFiles);
+        Assert.Contains("ACTIVE_DISCORD_UDP.bin", ClassicReferenceProfile.RequiredEngineFiles);
+        Assert.Contains("list-google.txt", ClassicReferenceProfile.RequiredListFiles);
+        Assert.Contains("ipset-exclude-user.txt", ClassicReferenceProfile.RequiredListFiles);
+    }
+
+    [Fact]
+    public void ServiceStrategyCache_IsolatedByNetworkAndService()
+    {
+        var older = new ServiceStrategyResult("youtube", EngineType.Classic, "ALT3", ["--filter-tcp=443"], "tls",
+            DateTimeOffset.Parse("2026-01-01T00:00:00Z"), "network-a", 80);
+        var winner = older with { StrategyFamily = "ALT7", LastValidated = older.LastValidated.AddDays(1), SuccessScore = 95 };
+        var anotherNetwork = older with { NetworkFingerprint = "network-b", StrategyFamily = "ALT2", SuccessScore = 100 };
+
+        var cached = ServiceStrategyCache.ForNetwork([older, winner, anotherNetwork], "network-a");
+
+        Assert.Equal("ALT7", cached["youtube"].StrategyFamily);
+        Assert.DoesNotContain(ServiceStrategyCache.ForNetwork([older, winner, anotherNetwork], "network-a").Values,
+            item => item.NetworkFingerprint == "network-b");
     }
 
     [Fact]

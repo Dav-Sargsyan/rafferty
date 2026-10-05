@@ -38,6 +38,7 @@ public static class AppPaths
     public static string ListsDirectory => Path.Combine(RuntimeRoot, "lists");
     public static string ServiceListsDirectory => Path.Combine(ListsDirectory, "services");
     public static string ActiveHostlistFile => Path.Combine(ListsDirectory, "active-hostlist.txt");
+    public static string ActiveGeneralHostlistFile => Path.Combine(ListsDirectory, "active-general-hostlist.txt");
     public static string RuntimeManifestFile => Path.Combine(RuntimeRoot, "runtime-manifest.json");
     public static string LogsDirectory => Path.Combine(UserDataRoot, "logs");
     public static string LicensesDirectory => Path.Combine(RuntimeRoot, "licenses");

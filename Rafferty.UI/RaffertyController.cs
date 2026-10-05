@@ -60,21 +60,28 @@ internal sealed class RaffertyController : IAsyncDisposable
         checkVoice &= checkDiscord;
         var enabledTargets = enabledTargetIds ?? BuildEnabledTargets(checkYouTube, checkDiscord, checkVoice);
         var state = await _stateStore.LoadAsync(token).ConfigureAwait(false);
+        var networkFingerprint = NetworkIdentity.GetCurrent();
+        var sameNetwork = string.Equals(state?.LastNetworkId, networkFingerprint, StringComparison.Ordinal);
+        var cachedStrategyId = sameNetwork
+            ? TryGetCachedStrategy(state?.ServiceStrategies, enabledTargets, networkFingerprint)
+            : null;
         var savedStrategyId = preferredEngine switch
         {
-            EngineType.Classic => state?.LastKnownGoodClassicStrategy ?? state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId,
-            EngineType.NextGen => state?.LastKnownGoodNextGenStrategy ?? state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId,
-            _ => state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId
+            EngineType.Classic => cachedStrategyId ?? state?.LastKnownGoodClassicStrategy ?? state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId,
+            EngineType.NextGen => cachedStrategyId ?? state?.LastKnownGoodNextGenStrategy ?? state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId,
+            _ => cachedStrategyId ?? state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId
         };
+        if (!sameNetwork) savedStrategyId = null;
         var savedEngine = state?.LastSuccessfulEngine is not null and not EngineType.Auto
             ? state.LastSuccessfulEngine
             : state?.ActiveEngine ?? EngineType.Auto;
+        Strategy? savedStrategy = null;
         if (!string.IsNullOrWhiteSpace(savedStrategyId))
         {
             try
             {
-                var saved = await _strategies!.GetAsync(savedStrategyId, token).ConfigureAwait(false);
-                if (preferredEngine != EngineType.Auto && saved.EngineType != preferredEngine) savedStrategyId = null;
+                savedStrategy = await _strategies!.GetAsync(savedStrategyId, token).ConfigureAwait(false);
+                if (preferredEngine != EngineType.Auto && savedStrategy.EngineType != preferredEngine) savedStrategyId = null;
             }
             catch (KeyNotFoundException)
             {
@@ -103,9 +110,11 @@ internal sealed class RaffertyController : IAsyncDisposable
                         LastSuccessfulStrategy = savedStrategyId,
                         LastSuccessfulEngine = Status.EngineType,
                         LastSuccessfulTest = DateTimeOffset.Now,
+                        LastNetworkId = networkFingerprint,
                         StrategyHistory = MergeHistory(state?.StrategyHistory, [new(savedStrategyId, true, DateTimeOffset.Now)]),
                         LastKnownGoodClassicStrategy = Status.EngineType == EngineType.Classic ? savedStrategyId : state?.LastKnownGoodClassicStrategy,
-                        LastKnownGoodNextGenStrategy = Status.EngineType == EngineType.NextGen ? savedStrategyId : state?.LastKnownGoodNextGenStrategy
+                        LastKnownGoodNextGenStrategy = Status.EngineType == EngineType.NextGen ? savedStrategyId : state?.LastKnownGoodNextGenStrategy,
+                        ServiceStrategies = CacheValidatedServices(state?.ServiceStrategies, savedStrategy!, enabledTargets, networkFingerprint)
                     };
                     await _stateStore.SaveAsync(state, token).ConfigureAwait(false);
                     _recoveryStage = 0;
@@ -160,10 +169,13 @@ internal sealed class RaffertyController : IAsyncDisposable
         var backups = result.Scores.OrderByDescending(score => score.Score)
             .Where(score => !string.Equals(score.StrategyId, result.SelectedStrategyId, StringComparison.OrdinalIgnoreCase))
             .Take(3).Select(score => score.StrategyId).ToArray();
-        await _stateStore.SaveAsync(new(result.SelectedStrategyId, backups, DateTimeOffset.Now, NetworkIdentity.GetCurrent(), Status.EngineType,
+        var selectedStrategy = await _strategies!.GetAsync(result.SelectedStrategyId, token).ConfigureAwait(false);
+        await _stateStore.SaveAsync(new(result.SelectedStrategyId, backups, DateTimeOffset.Now, networkFingerprint, Status.EngineType,
             result.SelectedStrategyId, Status.EngineType, MergeHistory(history, HistoryFromScores(result.Scores)),
             Status.EngineType == EngineType.Classic ? result.SelectedStrategyId : state?.LastKnownGoodClassicStrategy,
-            Status.EngineType == EngineType.NextGen ? result.SelectedStrategyId : state?.LastKnownGoodNextGenStrategy), token).ConfigureAwait(false);
+            Status.EngineType == EngineType.NextGen ? result.SelectedStrategyId : state?.LastKnownGoodNextGenStrategy,
+            CacheValidatedServices(state?.ServiceStrategies, selectedStrategy, enabledTargets, networkFingerprint),
+            Status.CommandLine), token).ConfigureAwait(false);
         _recoveryStage = 0;
         return Status;
     }
@@ -256,7 +268,9 @@ internal sealed class RaffertyController : IAsyncDisposable
                 verified ? strategy.EngineType : previous?.LastSuccessfulEngine ?? EngineType.Auto,
                 MergeHistory(previous?.StrategyHistory, [new(strategy.Id, verified, DateTimeOffset.Now)]),
                 verified && strategy.EngineType == EngineType.Classic ? strategy.Id : previous?.LastKnownGoodClassicStrategy,
-                verified && strategy.EngineType == EngineType.NextGen ? strategy.Id : previous?.LastKnownGoodNextGenStrategy), token).ConfigureAwait(false);
+                verified && strategy.EngineType == EngineType.NextGen ? strategy.Id : previous?.LastKnownGoodNextGenStrategy,
+                verified ? CacheValidatedServices(previous?.ServiceStrategies, strategy, enabledTargets, NetworkIdentity.GetCurrent()) : previous?.ServiceStrategies,
+                verified ? Status.CommandLine : previous?.LastKnownGoodCommand), token).ConfigureAwait(false);
             return Status;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -303,7 +317,9 @@ internal sealed class RaffertyController : IAsyncDisposable
             await _stateStore.SaveAsync(new(strategy.Id, [], DateTimeOffset.Now, NetworkIdentity.GetCurrent(), strategy.EngineType,
                 strategy.Id, strategy.EngineType, MergeHistory(previous?.StrategyHistory, HistoryFromScores(result.Scores)),
                 strategy.EngineType == EngineType.Classic ? strategy.Id : previous?.LastKnownGoodClassicStrategy,
-                strategy.EngineType == EngineType.NextGen ? strategy.Id : previous?.LastKnownGoodNextGenStrategy), token).ConfigureAwait(false);
+                strategy.EngineType == EngineType.NextGen ? strategy.Id : previous?.LastKnownGoodNextGenStrategy,
+                CacheValidatedServices(previous?.ServiceStrategies, strategy, enabledTargets, NetworkIdentity.GetCurrent()),
+                Status.CommandLine), token).ConfigureAwait(false);
             return Status;
         }
         return await EnableAsync(progress, token, checkYouTube, checkDiscord, checkVoice, autoFindOnFailure: true,
@@ -355,6 +371,7 @@ internal sealed class RaffertyController : IAsyncDisposable
             ? selected
             : new[] { ServiceTargetCatalog.YouTube, ServiceTargetCatalog.Discord, ServiceTargetCatalog.Voice };
         var diagnostics = await RunDiagnosticsAsync(enabledTargets, token).ConfigureAwait(false);
+        var prerequisites = await WindowsNetworkPrerequisites.InspectAsync(token).ConfigureAwait(false);
         var snapshot = Status;
         var persistedState = await _stateStore.LoadAsync(token).ConfigureAwait(false);
         var selectedStrategy = snapshot.StrategyId ?? persistedState?.ActiveStrategyId;
@@ -408,6 +425,9 @@ internal sealed class RaffertyController : IAsyncDisposable
             strategyPackVersion = AppPaths.StrategyPackVersion,
             referenceRevision = "249a70424aae2676f99c5363e21073ed89873eda",
             administrator = snapshot.IsAdministrator,
+            baseFilteringEngineRunning = prerequisites.BaseFilteringEngineRunning,
+            tcpTimestamps = prerequisites.TcpTimestamps,
+            potentiallyConflictingNetworkServices = prerequisites.PotentiallyConflictingServices,
             driverActive = snapshot.DriverActive,
             strategyApplied = snapshot.StrategyApplied,
             connectivityVerified = snapshot.ConnectivityVerified,
@@ -596,6 +616,40 @@ internal sealed class RaffertyController : IAsyncDisposable
         var merged = (existing ?? []).ToDictionary(item => item.StrategyId, StringComparer.OrdinalIgnoreCase);
         foreach (var update in updates) merged[update.StrategyId] = update;
         return merged.Values.OrderByDescending(item => item.LastTested).Take(64).ToArray();
+    }
+
+    private static string? TryGetCachedStrategy(
+        IReadOnlyList<ServiceStrategyResult>? results,
+        IReadOnlyCollection<string> enabledTargets,
+        string networkFingerprint)
+    {
+        if (enabledTargets.Count == 0) return null;
+        var winners = ServiceStrategyCache.ForNetwork(results, networkFingerprint);
+        var selected = enabledTargets
+            .Select(id => winners.TryGetValue(id, out var result) ? result : null)
+            .ToArray();
+        if (selected.Any(result => result is null)) return null;
+        var families = selected.Select(result => result!.StrategyFamily).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        // A divergent per-service cache is intentionally not flattened back
+        // into a global strategy. It will be used once the composite launcher
+        // is selected, rather than silently discarding a service winner.
+        return families.Length == 1 ? families[0] : null;
+    }
+
+    private static IReadOnlyList<ServiceStrategyResult> CacheValidatedServices(
+        IReadOnlyList<ServiceStrategyResult>? existing,
+        Strategy strategy,
+        IReadOnlyCollection<string> enabledTargets,
+        string networkFingerprint)
+    {
+        var results = existing ?? [];
+        foreach (var targetId in enabledTargets.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var result = new ServiceStrategyResult(targetId, strategy.EngineType, strategy.Id, strategy.Arguments,
+                string.Join(',', strategy.Protocols), DateTimeOffset.UtcNow, networkFingerprint, 100);
+            results = ServiceStrategyCache.Upsert(results, result);
+        }
+        return results;
     }
 
     private BypassEngineManager Engine => _engine ?? throw new InvalidOperationException("Rafferty is not initialized.");

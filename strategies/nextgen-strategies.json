@@ -4,6 +4,19 @@
   "updatedAt": "2026-10-01T00:00:00Z",
   "strategies": [
     {
+      "id": "nextgen-upstream-baseline",
+      "name": "Next-gen Upstream Baseline",
+      "description": "Service-scoped HTTP, TLS and QUIC baseline using the bundled zapret2-compatible upstream syntax.",
+      "targets": ["general"],
+      "protocols": ["tcp", "udp", "http", "tls", "quic"],
+      "ports": [80, 443],
+      "arguments": ["--wf-tcp-out=80,443", "--wf-udp-out=443", "--filter-tcp=80", "--filter-l7=http", "--hostlist={lists}\\active-general-hostlist.txt", "--payload=http_req", "--lua-desync=fake:blob=fake_default_http:tcp_md5", "--lua-desync=multisplit:pos=method+2", "--new", "--filter-tcp=443", "--filter-l7=tls", "--hostlist={lists}\\active-general-hostlist.txt", "--payload=tls_client_hello", "--lua-desync=fake:blob=fake_default_tls:tcp_md5:tcp_seq=-10000", "--lua-desync=multidisorder:pos=1,midsld", "--new", "--filter-udp=443", "--filter-l7=quic", "--hostlist={lists}\\active-general-hostlist.txt", "--payload=quic_initial", "--lua-desync=fake:blob=fake_default_quic:repeats=6"],
+      "engineType": "NextGen",
+      "luaFiles": ["lua/zapret-lib.lua", "lua/zapret-antidpi.lua"],
+      "requiredFiles": ["cygwin1.dll", "WinDivert.dll", "WinDivert64.sys"],
+      "attribution": "bol-van/zapret2 v1.0.5.2 upstream-compatible baseline; MIT license notice bundled."
+    },
+    {
       "id": "nextgen-balanced",
       "name": "Next-gen Balanced",
       "description": "Balanced TLS, HTTP, QUIC and Discord profile.",

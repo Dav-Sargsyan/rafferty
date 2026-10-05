@@ -177,6 +177,20 @@ public static class ServiceListManager
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        var dedicatedDomains = enabledServiceIds
+            .Where(id => packs.ContainsKey(id))
+            .SelectMany(id => packs[id])
+            .ToArray();
+        // Dedicated service profiles are checked before the general profile.
+        // Keep their hosts out of the latter so one flow cannot match two
+        // different desync methods in the same engine process.
+        var generalDomains = baseDomains
+            .Concat(customDomains)
+            .Where(domain => !IsExcluded(domain, excluded))
+            .Where(domain => !dedicatedDomains.Any(dedicated => IsSameOrSubdomain(domain, dedicated)))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         foreach (var target in ServiceTargetCatalog.All.Where(target => target.Id != ServiceTargetCatalog.Voice))
         {
             var activePack = packs[target.Id]
@@ -187,6 +201,7 @@ public static class ServiceListManager
             WriteAtomic(Path.Combine(listsDirectory, $"active-service-{target.Id}.txt"), activePack);
         }
         WriteAtomic(targetPath, serviceDomains);
+        WriteAtomic(Path.Combine(listsDirectory, "active-general-hostlist.txt"), generalDomains);
     }
 
     private static void WriteAtomic(string targetPath, IEnumerable<string> lines)
@@ -235,9 +250,9 @@ public static class ServiceStrategyComposer
             && section.Any(IsGeneralHostlist));
         foreach (var targetId in enabled.Where(id => id is ServiceTargetCatalog.ChatGpt or ServiceTargetCatalog.Instagram or ServiceTargetCatalog.TikTok or ServiceTargetCatalog.Telegram))
         {
-            if (tcpTemplate is not null) output.Add(CreateExtension(tcpTemplate, targetId));
+            if (tcpTemplate is not null) output.Add(CreateExtension(tcpTemplate, targetId, engineType));
             if (udpTemplate is not null && ServiceTargetCatalog.Get(targetId).Protocols.Contains("quic", StringComparer.OrdinalIgnoreCase))
-                output.Add(CreateExtension(udpTemplate, targetId));
+                output.Add(CreateExtension(udpTemplate, targetId, engineType));
         }
         foreach (var source in sections)
         {
@@ -258,16 +273,19 @@ public static class ServiceStrategyComposer
                 section.RemoveAll(argument =>
                     argument.Contains("list-general.txt", StringComparison.OrdinalIgnoreCase)
                     || argument.Contains("list-general-user.txt", StringComparison.OrdinalIgnoreCase));
-                section.Insert(hostlistIndex, "--hostlist={lists}\\active-hostlist.txt");
+                section.Insert(hostlistIndex, "--hostlist={lists}\\active-general-hostlist.txt");
             }
             output.Add(section);
         }
         return output.SelectMany((section, index) => index == 0 ? section : new[] { "--new" }.Concat(section)).ToArray();
     }
 
-    private static IReadOnlyList<string> CreateExtension(IReadOnlyList<string> template, string targetId)
+    private static IReadOnlyList<string> CreateExtension(IReadOnlyList<string> template, string targetId, EngineType engineType)
     {
-        var result = template.Where(argument => !IsGeneralHostlist(argument)).ToList();
+        var result = template
+            .Where(argument => !IsGeneralHostlist(argument))
+            .Where(argument => engineType != EngineType.NextGen || !argument.StartsWith("--wf-", StringComparison.OrdinalIgnoreCase))
+            .ToList();
         var filterIndex = result.FindIndex(argument => argument.StartsWith("--filter-", StringComparison.OrdinalIgnoreCase));
         result.Insert(Math.Max(0, filterIndex + 1), $"--hostlist={{lists}}\\active-service-{targetId}.txt");
         return result;
@@ -275,7 +293,8 @@ public static class ServiceStrategyComposer
 
     private static bool IsGeneralHostlist(string argument) =>
         argument.Contains("list-general.txt", StringComparison.OrdinalIgnoreCase)
-        || argument.Contains("list-general-user.txt", StringComparison.OrdinalIgnoreCase);
+        || argument.Contains("list-general-user.txt", StringComparison.OrdinalIgnoreCase)
+        || argument.Contains("active-general-hostlist.txt", StringComparison.OrdinalIgnoreCase);
 
     private static bool FilterIncludesPort(string argument, string prefix, string port) =>
         argument.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)

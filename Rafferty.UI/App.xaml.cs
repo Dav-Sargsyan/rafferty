@@ -113,7 +113,7 @@ public partial class App : System.Windows.Application
                 try
                 {
                     await _controller.ConfigureRuntimeAsync(new EngineRuntimeOptions(
-                        IpSetMode.Loaded, false, ReferenceCompatible: true), false);
+                        IpSetMode.Loaded, false, ReferenceCompatible: true, ClassicReferenceExact: true), false);
                     status = await _controller.ApplyStrategyAsync(strategyId, checkDiscord: false, checkVoice: false);
                     var golden = await _controller.CompareWithGoldenAsync(strategyId);
                     var report = new { strategyId, referenceCompatible = true, golden, status };
