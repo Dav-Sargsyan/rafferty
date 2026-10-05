@@ -1,0 +1,7 @@
+# Discord web, API, gateway and media
+discord.com
+discord.gg
+discordapp.com
+discordapp.net
+discord.media
+discordcdn.com

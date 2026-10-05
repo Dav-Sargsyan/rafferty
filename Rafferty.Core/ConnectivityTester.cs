@@ -26,23 +26,38 @@ public sealed class ConnectivityTester : IDisposable
         };
     }
 
-    public async Task<IReadOnlyList<DiagnosticResult>> RunDiagnosticsAsync(CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<DiagnosticResult>> RunDiagnosticsAsync(CancellationToken cancellationToken = default) =>
+        await RunDiagnosticsAsync(ServiceTargetCatalog.All.Select(target => target.Id).ToArray(), cancellationToken)
+            .ConfigureAwait(false);
+
+    public async Task<IReadOnlyList<DiagnosticResult>> RunDiagnosticsAsync(
+        IReadOnlyCollection<string> enabledTargetIds,
+        CancellationToken cancellationToken = default)
     {
-        var tasks = new Task<DiagnosticResult>[]
+        var tasks = new List<Task<DiagnosticResult>>
         {
             TestInternetAsync(cancellationToken),
             TestDnsAsync("youtube.com", cancellationToken),
             TestAddressFamilyAsync(AddressFamily.InterNetwork, cancellationToken),
-            TestAddressFamilyAsync(AddressFamily.InterNetworkV6, cancellationToken),
-            TestTcpAsync("www.youtube.com", 443, "tcp443", "TCP 443", cancellationToken),
-            TestHttpAsync("https://www.youtube.com/generate_204", "youtube", "YouTube", cancellationToken),
-            TestHttpAsync("https://redirector.googlevideo.com/report_mapping", "googlevideo", "Google Video CDN", cancellationToken),
-            TestHttpAsync("https://discord.com/api/v10/gateway", "discord-api", "Discord API", cancellationToken),
-            TestHttpAsync("https://cdn.discordapp.com", "discord-cdn", "Discord CDN", cancellationToken),
-            TestDiscordGatewayAsync(cancellationToken),
-            TestHttp3Async(cancellationToken),
-            TestStunAsync(cancellationToken)
+            TestAddressFamilyAsync(AddressFamily.InterNetworkV6, cancellationToken)
         };
+        foreach (var targetId in enabledTargetIds.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (string.Equals(targetId, ServiceTargetCatalog.Voice, StringComparison.OrdinalIgnoreCase))
+            {
+                tasks.Add(TestStunAsync(cancellationToken));
+                continue;
+            }
+            var target = ServiceTargetCatalog.Get(targetId);
+            tasks.AddRange(target.TestEndpoints.Select(endpoint => TestEndpointAsync(endpoint, cancellationToken)));
+            if (string.Equals(targetId, ServiceTargetCatalog.YouTube, StringComparison.OrdinalIgnoreCase))
+            {
+                tasks.Add(TestTcpAsync("www.youtube.com", 443, "tcp443", "TCP 443", cancellationToken));
+                tasks.Add(TestHttp3Async(cancellationToken));
+            }
+            if (string.Equals(targetId, ServiceTargetCatalog.Discord, StringComparison.OrdinalIgnoreCase))
+                tasks.Add(TestDiscordGatewayAsync(cancellationToken));
+        }
         return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
 
@@ -52,10 +67,30 @@ public sealed class ConnectivityTester : IDisposable
         bool checkVoice,
         CancellationToken cancellationToken = default)
     {
+        var targets = new List<string>();
+        if (checkYouTube) targets.Add(ServiceTargetCatalog.YouTube);
+        if (checkDiscord) targets.Add(ServiceTargetCatalog.Discord);
+        if (checkVoice) targets.Add(ServiceTargetCatalog.Voice);
+        return await RunQuickHealthCheckAsync(targets, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<DiagnosticResult>> RunQuickHealthCheckAsync(
+        IReadOnlyCollection<string> enabledTargetIds,
+        CancellationToken cancellationToken = default)
+    {
         var tasks = new List<Task<DiagnosticResult>>();
-        if (checkYouTube) tasks.Add(TestHttpAsync("https://www.youtube.com/generate_204", "youtube", "YouTube", cancellationToken));
-        if (checkDiscord) tasks.Add(TestHttpAsync("https://discord.com/api/v10/gateway", "discord-api", "Discord API", cancellationToken));
-        if (checkVoice) tasks.Add(TestStunAsync(cancellationToken));
+        foreach (var targetId in enabledTargetIds.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (string.Equals(targetId, ServiceTargetCatalog.Voice, StringComparison.OrdinalIgnoreCase))
+            {
+                tasks.Add(TestStunAsync(cancellationToken));
+                continue;
+            }
+            var target = ServiceTargetCatalog.Get(targetId);
+            tasks.AddRange(target.TestEndpoints.Select(endpoint => TestEndpointAsync(endpoint, cancellationToken)));
+            if (string.Equals(targetId, ServiceTargetCatalog.Discord, StringComparison.OrdinalIgnoreCase))
+                tasks.Add(TestDiscordGatewayAsync(cancellationToken));
+        }
         if (tasks.Count == 0) throw new ArgumentException("Select at least one service for the health check.");
         return await Task.WhenAll(tasks).ConfigureAwait(false);
     }
@@ -71,6 +106,7 @@ public sealed class ConnectivityTester : IDisposable
             return ServiceReachability.Unavailable;
         }
 
+        var serviceResults = ServiceTargetCatalog.SummarizeTargets(results, ServiceTargetCatalog.All.Select(target => target.Id));
         return new ReachabilitySnapshot(
             State("internet", "dns"),
             // QUIC is reported separately because HTTP/3 can be unavailable while
@@ -78,7 +114,8 @@ public sealed class ConnectivityTester : IDisposable
             State("youtube", "googlevideo"),
             State("discord-api", "discord-cdn", "discord-gateway"),
             State("discord-stun"),
-            DateTimeOffset.Now);
+            DateTimeOffset.Now,
+            serviceResults);
     }
 
     private async Task<DiagnosticResult> TestInternetAsync(CancellationToken token) =>
@@ -135,6 +172,14 @@ public sealed class ConnectivityTester : IDisposable
         {
             return new(id, name, DiagnosticState.Error, exception.Message, timer.Elapsed.TotalMilliseconds);
         }
+    }
+
+    private Task<DiagnosticResult> TestEndpointAsync(ServiceTestEndpoint endpoint, CancellationToken token)
+    {
+        var uri = new Uri(endpoint.Url);
+        return string.Equals(uri.Scheme, "tcp", StringComparison.OrdinalIgnoreCase)
+            ? TestTcpAsync(uri.Host, uri.Port, endpoint.Id, endpoint.DisplayName, token)
+            : TestHttpAsync(endpoint.Url, endpoint.Id, endpoint.DisplayName, token);
     }
 
     private static async Task<DiagnosticResult> TestStunAsync(CancellationToken token)

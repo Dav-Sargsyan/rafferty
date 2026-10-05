@@ -20,7 +20,35 @@ internal sealed class SettingsService
                 && settings.ManualStrategyId != "general"
                     ? settings.ManualStrategyId
                     : settings.ClassicStrategyId;
-            return settings with { Language = Localization.Normalize(settings.Language), ClassicStrategyId = classicStrategy };
+            var nextGenStrategy = settings.PreferredEngine == EngineType.NextGen
+                && settings.NextGenStrategyId == "nextgen-balanced"
+                && settings.ManualStrategyId.StartsWith("nextgen-", StringComparison.OrdinalIgnoreCase)
+                    ? settings.ManualStrategyId
+                    : settings.NextGenStrategyId;
+            var services = settings.Services ?? new ServiceSelection(
+                settings.CheckYouTube,
+                settings.CheckDiscord,
+                settings.CheckVoice,
+                settings.CheckChatGpt,
+                settings.CheckInstagram,
+                settings.CheckTikTok,
+                settings.CheckTelegram);
+            var normalized = settings with
+            {
+                Language = Localization.Normalize(settings.Language),
+                ClassicStrategyId = classicStrategy,
+                NextGenStrategyId = nextGenStrategy,
+                CheckYouTube = services.YouTube,
+                CheckDiscord = services.Discord,
+                CheckVoice = services.DiscordVoice && services.Discord,
+                CheckChatGpt = services.ChatGpt,
+                CheckInstagram = services.Instagram,
+                CheckTikTok = services.TikTok,
+                CheckTelegram = services.Telegram,
+                Services = services
+            };
+            if (settings.Services is null) await _store.SaveAsync(normalized, token).ConfigureAwait(false);
+            return normalized;
         }
         catch (Exception exception) when (exception is IOException or System.Text.Json.JsonException)
         {

@@ -58,7 +58,8 @@ public sealed record ReachabilitySnapshot(
     ServiceReachability YouTube,
     ServiceReachability Discord,
     ServiceReachability DiscordVoice,
-    DateTimeOffset? CheckedAt = null)
+    DateTimeOffset? CheckedAt = null,
+    IReadOnlyDictionary<string, ServiceReachability>? ServiceResults = null)
 {
     public static ReachabilitySnapshot Unknown { get; } = new(
         ServiceReachability.NotTested,
@@ -113,14 +114,16 @@ public sealed record StrategyScore(
     ServiceReachability Voice = ServiceReachability.NotTested,
     bool EngineStarted = true,
     bool DriverActive = true,
-    string? FailureReason = null);
+    string? FailureReason = null,
+    IReadOnlyDictionary<string, ServiceReachability>? TargetResults = null);
 
 public sealed record OptimizationResult(
     bool Success,
     string? SelectedStrategyId,
     IReadOnlyList<StrategyScore> Scores,
     IReadOnlyList<DiagnosticResult> Baseline,
-    string Message);
+    string Message,
+    bool FullyWorking = false);
 
 public sealed record UserSettings(
     bool StartWithWindows = false,
@@ -146,13 +149,30 @@ public sealed record UserSettings(
     bool RecheckOnStartup = false,
     bool AutoCheckUpdates = true,
     EngineType PreferredEngine = EngineType.Auto,
-    string ClassicStrategyId = "general");
+    string ClassicStrategyId = "general",
+    string NextGenStrategyId = "nextgen-balanced",
+    bool CheckChatGpt = false,
+    bool CheckInstagram = false,
+    bool CheckTikTok = false,
+    bool CheckTelegram = false,
+    ServiceSelection? Services = null);
+
+public sealed record ServiceSelection(
+    bool YouTube = true,
+    bool Discord = true,
+    bool DiscordVoice = true,
+    bool ChatGpt = false,
+    bool Instagram = false,
+    bool TikTok = false,
+    bool Telegram = false);
 
 public sealed record EngineRuntimeOptions(
     IpSetMode IpSetMode = IpSetMode.Loaded,
     bool GameFilterEnabled = false,
     string GameFilterTcp = "1024-65535",
-    string GameFilterUdp = "1024-65535");
+    string GameFilterUdp = "1024-65535",
+    IReadOnlyList<string>? EnabledServiceIds = null,
+    bool ReferenceCompatible = false);
 
 public sealed record UpdateManifest(
     string Version,

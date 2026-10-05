@@ -26,7 +26,6 @@ public partial class MainWindow : Window
     private static readonly Duration PageDuration = new(TimeSpan.FromMilliseconds(180));
     private readonly RaffertyController _controller;
     private readonly SettingsService _settingsService;
-    private readonly LatencyTester _latencyTester = new();
     private readonly UpdateService _updateService = new();
     private readonly JsonFileStore<UpdateState> _updateStateStore = new(AppPaths.UpdateStateFile);
     private readonly Forms.NotifyIcon _tray;
@@ -45,6 +44,9 @@ public partial class MainWindow : Window
         _settingsService = settingsService;
         _settings = settings;
         InitializeComponent();
+#if DEBUG
+        CompareGoldenButton.Visibility = Visibility.Visible;
+#endif
         _updateService.Diagnostic += message => _ = _controller.LogUpdateAsync(message);
         CurrentVersionText.Text = AppVersion.Display;
         ApplySettingsToControls();
@@ -167,7 +169,7 @@ public partial class MainWindow : Window
                 SetCheckingState();
                 status = _settings.ManualMode
                     ? await _controller.ApplyStrategyAsync(_settings.ManualStrategyId, _lifetime.Token,
-                        _settings.CheckYouTube, _settings.CheckDiscord, _settings.CheckVoice)
+                        _settings.CheckYouTube, _settings.CheckDiscord, _settings.CheckVoice, ServiceTargetCatalog.EnabledFromSettings(_settings))
                     : await _controller.EnableAsync(
                         new Progress<string>(message => ActivityText.Text = LocalizeProgress(message)),
                         _lifetime.Token,
@@ -176,7 +178,8 @@ public partial class MainWindow : Window
                         _settings.CheckVoice,
                         _settings.AutoFindOnFailure,
                         _settings.RecheckOnStartup,
-                        _settings.PreferredEngine);
+                        _settings.PreferredEngine,
+                        ServiceTargetCatalog.EnabledFromSettings(_settings));
                 ActivityText.Text = Localization.T("ConnectionOptimized");
                 if (_settings.Notifications && status.DriverActive && status.StrategyApplied && status.ConnectivityVerified)
                     _tray.ShowBalloonTip(1200, Localization.T("AppName"), Localization.T("ConnectionProtected"), Forms.ToolTipIcon.Info);
@@ -188,6 +191,18 @@ public partial class MainWindow : Window
             ActivityText.Text = exception.Message;
             StatusTitle.Text = Localization.T("ConnectionProblem");
             StatusSubtitle.Text = Localization.T("OpenDiagnostics");
+            var partial = _controller.LastOptimization;
+            if (partial is { Success: false, SelectedStrategyId: not null })
+            {
+                var choice = System.Windows.MessageBox.Show(this,
+                    $"{partial.Message}\n\nЗапустить лучший частично рабочий вариант {StrategyNames.DisplayName(partial.SelectedStrategyId)}?",
+                    Localization.T("AppName"), MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                if (choice == MessageBoxResult.Yes)
+                {
+                    await ApplySelectedStrategyAsync(partial.SelectedStrategyId);
+                    return;
+                }
+            }
             System.Windows.MessageBox.Show(this, exception.Message, Localization.T("AppName"), MessageBoxButton.OK, MessageBoxImage.Warning);
             UpdateStatus(_controller.Status);
         }
@@ -208,7 +223,8 @@ public partial class MainWindow : Window
                 _settings.CheckDiscord,
                 _settings.CheckVoice,
                 _settings.PreferredEngine,
-                deepSearch: true);
+                deepSearch: true,
+                enabledTargetIds: ServiceTargetCatalog.EnabledFromSettings(_settings));
             ActivityText.Text = Localization.T("ConnectionOptimized");
             UpdateStatus(status);
         }
@@ -237,10 +253,10 @@ public partial class MainWindow : Window
 
     private async Task RunDiagnosticsAsync()
     {
-        SetBusy(true, Localization.T("CheckingServices"));
+        SetBusy(true, Localization.T("CheckingSelectedServices"));
         try
         {
-            var diagnostics = await _controller.RunDiagnosticsAsync(_lifetime.Token);
+            var diagnostics = await _controller.RunDiagnosticsAsync(ServiceTargetCatalog.EnabledFromSettings(_settings), _lifetime.Token);
             UpdateStatus(_controller.Status);
             var text = string.Join(Environment.NewLine, diagnostics.Select(result => $"{result.Name}: {result.State} — {result.Detail}"));
             new DiagnosticsWindow(Localization.T("Diagnostics"), Localization.T("DiagnosticsDescription"), text) { Owner = this }.ShowDialog();
@@ -255,37 +271,22 @@ public partial class MainWindow : Window
     private async Task TestLatencyAsync()
     {
         LatencyButton.IsEnabled = false;
-        LatencyButton.Content = Localization.T("Testing");
-        LastTestText.Text = Localization.T("TestingEndpoints");
+        LatencyButton.Content = "…";
+        SummaryStatusTitle.Text = Localization.T("ConnectingStatus");
+        SummaryStatusText.Text = Localization.T("CheckingSelectedServices");
+        SummaryStatusTitle.Foreground = (WpfBrush)FindResource("AccentTextBrush");
+        SummaryStatusDot.Fill = (WpfBrush)FindResource("AccentBrush");
+        LastTestText.Text = string.Empty;
         try
         {
-            var youtubeTask = _latencyTester.TestYouTubeAsync(_lifetime.Token);
-            var discordTask = _latencyTester.TestDiscordAsync(_lifetime.Token);
-            var voiceTask = _latencyTester.TestDiscordVoiceAsync(_lifetime.Token);
-            await Task.WhenAll(youtubeTask, discordTask, voiceTask);
-            ShowLatency(YoutubeLatency, await youtubeTask);
-            ShowLatency(DiscordLatency, await discordTask);
-            ShowLatency(VoiceLatency, await voiceTask);
-            LastTestText.Text = string.Format(Localization.T("LastTested"), DateTime.Now.ToString("HH:mm"));
+            var enabled = ServiceTargetCatalog.EnabledFromSettings(_settings);
+            await _controller.RunDiagnosticsAsync(enabled, _lifetime.Token);
+            UpdateStatus(_controller.Status);
         }
-        catch (OperationCanceledException) { LastTestText.Text = Localization.T("TestCancelled"); }
-        finally { LatencyButton.Content = Localization.T("TestLatency"); LatencyButton.IsEnabled = true; }
+        catch (OperationCanceledException) { UpdateStatus(_controller.Status); }
+        finally { LatencyButton.Content = "↻"; LatencyButton.IsEnabled = _status?.EngineRunning == true; }
     }
 
-    private static void ShowLatency(TextBlock target, ServiceLatencyResult result)
-    {
-        if (!result.Success || result.LatencyMs is null)
-        {
-            target.Text = Localization.T("Failed");
-            target.Foreground = DangerBrush;
-            target.ToolTip = result.Error;
-            return;
-        }
-        var value = result.LatencyMs.Value;
-        target.Text = $"{Math.Round(value):0} ms";
-        target.Foreground = value switch { < 60 => SuccessBrush, < 120 => (WpfBrush)System.Windows.Application.Current.FindResource("PrimaryTextBrush"), < 200 => WarningBrush, _ => DangerBrush };
-        target.ToolTip = null;
-    }
 
     private static string LocalizeProgress(string message)
     {
@@ -301,7 +302,7 @@ public partial class MainWindow : Window
         var active = status.EngineRunning;
         var verified = active && status.IsAdministrator && status.DriverActive && status.StrategyApplied && status.ConnectivityVerified;
         StatusTitle.Text = Localization.T(verified ? "ProtectedTitle" : active ? "ActiveTitle" : "ReadyTitle");
-        StatusSubtitle.Text = Localization.T(verified ? "ProtectedSubtitle" : active ? "ActiveSubtitle" : "ReadySubtitle");
+        StatusSubtitle.Text = Localization.T(verified ? "SelectedServicesAvailable" : active ? "ActiveSubtitle" : "ReadySubtitle");
         ProtectionText.Text = Localization.T(verified ? "Protected" : active ? "ActiveUnverified" : "NotActive");
         ProtectionText.Foreground = verified ? SuccessBrush : active ? WarningBrush : (WpfBrush)FindResource("MutedTextBrush");
         PowerButton.Content = Localization.T(active ? "Disable" : "Enable");
@@ -324,9 +325,7 @@ public partial class MainWindow : Window
         AdvancedWorkingDirectoryText.Text = _controller.EngineWorkingDirectory;
         AdvancedRuntimeText.Text = _controller.RuntimeDirectory;
         CommandLineText.Text = status.CommandLine ?? string.Empty;
-        SetReachability(YoutubeState, YoutubeDot, status.Reachability.YouTube);
-        SetReachability(DiscordState, DiscordDot, status.Reachability.Discord);
-        SetReachability(VoiceState, VoiceDot, status.Reachability.DiscordVoice);
+        UpdateServiceSummary(status);
         _tray.Text = Localization.T(verified ? "TrayProtected" : active ? "TrayUnverified" : "TrayDisabled");
     }
 
@@ -334,15 +333,84 @@ public partial class MainWindow : Window
     {
         StatusTitle.Text = Localization.T("FindingConfiguration");
         StatusSubtitle.Text = Localization.T("UsuallyMoment");
-        YoutubeState.Text = Localization.T("Testing"); DiscordState.Text = Localization.T("Waiting"); VoiceState.Text = Localization.T("Waiting");
-        YoutubeDot.Fill = DiscordDot.Fill = VoiceDot.Fill = WarningBrush;
+        SummaryStatusTitle.Text = Localization.T("ConnectingStatus");
+        SummaryStatusText.Text = Localization.T("CheckingSelectedServices");
+        SummaryStatusTitle.Foreground = (WpfBrush)FindResource("AccentTextBrush");
+        SummaryStatusDot.Fill = (WpfBrush)FindResource("AccentBrush");
+        LastTestText.Text = string.Empty;
+        UpdateSelectedTargetsText();
     }
 
-    private static void SetReachability(TextBlock text, System.Windows.Shapes.Ellipse dot, ServiceReachability state)
+    private void UpdateServiceSummary(EngineSnapshot status)
     {
-        text.Text = Localization.T(state switch { ServiceReachability.Working => "Working", ServiceReachability.Degraded => "Limited", ServiceReachability.Unavailable => "Unavailable", _ => "Waiting" });
-        dot.Fill = state switch { ServiceReachability.Working => SuccessBrush, ServiceReachability.Degraded => WarningBrush, ServiceReachability.Unavailable => DangerBrush, _ => IdleBrush };
+        var enabled = ServiceTargetCatalog.EnabledFromSettings(_settings).ToArray();
+        UpdateSelectedTargetsText();
+        if (!status.EngineRunning)
+        {
+            SummaryStatusTitle.Text = Localization.T("BypassInactive");
+            SummaryStatusText.Text = Localization.T("RaffertyInactive");
+            SummaryStatusTitle.Foreground = new SolidColorBrush(WpfColor.FromRgb(200, 129, 137));
+            SummaryStatusDot.Fill = new SolidColorBrush(WpfColor.FromRgb(135, 83, 90));
+            LastTestText.Text = string.Empty;
+            LatencyButton.IsEnabled = false;
+            return;
+        }
+
+        var states = enabled.Select(id => (Id: id, State: ServiceState(status.Reachability, id))).ToArray();
+        if (states.Length == 0 || states.All(item => item.State == ServiceReachability.NotTested))
+        {
+            SummaryStatusTitle.Text = Localization.T("ConnectingStatus");
+            SummaryStatusText.Text = Localization.T("CheckingSelectedServices");
+            SummaryStatusTitle.Foreground = (WpfBrush)FindResource("AccentTextBrush");
+            SummaryStatusDot.Fill = (WpfBrush)FindResource("AccentBrush");
+            LastTestText.Text = string.Empty;
+            LatencyButton.IsEnabled = false;
+            return;
+        }
+
+        var working = states.Count(item => item.State == ServiceReachability.Working);
+        var unavailable = states.Where(item => item.State != ServiceReachability.Working)
+            .Select(item => ServiceDisplayName(item.Id)).ToArray();
+        SummaryStatusText.Text = string.Format(Localization.T("ServicesAvailable"), working, states.Length)
+            + (unavailable.Length == 0 ? string.Empty : $" • {string.Format(Localization.T("UnavailableServices"), string.Join(", ", unavailable))}");
+        if (working == states.Length)
+        {
+            SummaryStatusTitle.Text = Localization.T("AllServicesWorking");
+            SummaryStatusTitle.Foreground = SuccessBrush;
+            SummaryStatusDot.Fill = SuccessBrush;
+        }
+        else if (working > 0 || states.Any(item => item.State == ServiceReachability.Degraded))
+        {
+            SummaryStatusTitle.Text = Localization.T("ServiceProblems");
+            SummaryStatusTitle.Foreground = WarningBrush;
+            SummaryStatusDot.Fill = WarningBrush;
+        }
+        else
+        {
+            SummaryStatusTitle.Text = Localization.T("BypassNotWorking");
+            SummaryStatusTitle.Foreground = DangerBrush;
+            SummaryStatusDot.Fill = DangerBrush;
+        }
+        LastTestText.Text = status.Reachability.CheckedAt is { } checkedAt
+            ? string.Format(Localization.T("LastTested"), checkedAt.LocalDateTime.ToString("HH:mm"))
+            : string.Empty;
+        LatencyButton.IsEnabled = true;
     }
+
+    private static ServiceReachability ServiceState(ReachabilitySnapshot snapshot, string id) =>
+        snapshot.ServiceResults?.TryGetValue(id, out var state) == true ? state : ServiceReachability.NotTested;
+
+    private void UpdateSelectedTargetsText()
+    {
+        var names = ServiceTargetCatalog.EnabledFromSettings(_settings).Select(ServiceDisplayName).ToArray();
+        SummaryTargetsText.Text = names.Length <= 3
+            ? string.Join(" • ", names)
+            : $"{string.Join(" • ", names.Take(3))} • +{names.Length - 3}";
+    }
+
+    private static string ServiceDisplayName(string id) => id == ServiceTargetCatalog.Voice
+        ? Localization.T("Voice")
+        : ServiceTargetCatalog.Get(id).DisplayName;
 
     private void ApplySettingsToControls()
     {
@@ -354,6 +422,11 @@ public partial class MainWindow : Window
         CheckYouTubeBox.IsChecked = _settings.CheckYouTube;
         CheckDiscordBox.IsChecked = _settings.CheckDiscord;
         CheckVoiceBox.IsChecked = _settings.CheckVoice;
+        CheckChatGptBox.IsChecked = _settings.CheckChatGpt;
+        CheckInstagramBox.IsChecked = _settings.CheckInstagram;
+        CheckTikTokBox.IsChecked = _settings.CheckTikTok;
+        CheckTelegramBox.IsChecked = _settings.CheckTelegram;
+        UpdateSelectedTargetsText();
         AutoFindOnFailureToggle.IsChecked = _settings.AutoFindOnFailure;
         RecheckOnStartupToggle.IsChecked = _settings.RecheckOnStartup;
         AutoCheckUpdatesToggle.IsChecked = _settings.AutoCheckUpdates;
@@ -367,7 +440,7 @@ public partial class MainWindow : Window
         ModeSelector.SelectedIndex = _settings.ManualMode ? 1 : 0;
         EngineSelector.SelectedIndex = _settings.PreferredEngine switch { EngineType.Classic => 1, EngineType.NextGen => 2, _ => 0 };
         DashboardEngineSelector.SelectedIndex = EngineSelector.SelectedIndex;
-        DashboardClassicStrategyPanel.Visibility = _settings.PreferredEngine == EngineType.Classic ? Visibility.Visible : Visibility.Collapsed;
+        DashboardClassicStrategyPanel.Visibility = _settings.PreferredEngine == EngineType.Auto ? Visibility.Collapsed : Visibility.Visible;
         ManualStrategyPanel.Visibility = _settings.ManualMode ? Visibility.Visible : Visibility.Collapsed;
         LanguageSelector.SelectedIndex = Localization.Normalize(_settings.Language) == Localization.EnglishLanguage ? 1 : 0;
         _loadingSettings = false;
@@ -386,9 +459,22 @@ public partial class MainWindow : Window
             ManualStrategyId = SelectedStrategyId() ?? _settings.ManualStrategyId,
             PreferredEngine = EngineSelector.SelectedIndex switch { 1 => EngineType.Classic, 2 => EngineType.NextGen, _ => EngineType.Auto },
             ClassicStrategyId = EngineSelector.SelectedIndex == 1 ? SelectedStrategyId() ?? _settings.ClassicStrategyId : _settings.ClassicStrategyId,
+            NextGenStrategyId = EngineSelector.SelectedIndex == 2 ? SelectedStrategyId() ?? _settings.NextGenStrategyId : _settings.NextGenStrategyId,
             CheckYouTube = CheckYouTubeBox.IsChecked == true,
             CheckDiscord = CheckDiscordBox.IsChecked == true,
             CheckVoice = CheckVoiceBox.IsChecked == true,
+            CheckChatGpt = CheckChatGptBox.IsChecked == true,
+            CheckInstagram = CheckInstagramBox.IsChecked == true,
+            CheckTikTok = CheckTikTokBox.IsChecked == true,
+            CheckTelegram = CheckTelegramBox.IsChecked == true,
+            Services = new ServiceSelection(
+                CheckYouTubeBox.IsChecked == true,
+                CheckDiscordBox.IsChecked == true,
+                CheckVoiceBox.IsChecked == true,
+                CheckChatGptBox.IsChecked == true,
+                CheckInstagramBox.IsChecked == true,
+                CheckTikTokBox.IsChecked == true,
+                CheckTelegramBox.IsChecked == true),
             AutoFindOnFailure = AutoFindOnFailureToggle.IsChecked == true,
             RecheckOnStartup = RecheckOnStartupToggle.IsChecked == true,
             AutoCheckUpdates = AutoCheckUpdatesToggle.IsChecked == true,
@@ -421,8 +507,13 @@ public partial class MainWindow : Window
 
     private void PopulateStrategySelector()
     {
-        var selectedId = SelectedStrategyId() ?? _settings.ManualStrategyId;
         var preferred = EngineSelector.SelectedIndex switch { 1 => EngineType.Classic, 2 => EngineType.NextGen, _ => EngineType.Auto };
+        var selectedId = preferred switch
+        {
+            EngineType.Classic => _settings.ClassicStrategyId,
+            EngineType.NextGen => _settings.NextGenStrategyId,
+            _ => SelectedStrategyId() ?? _settings.ManualStrategyId
+        };
         var visible = _strategies.Where(strategy => preferred == EngineType.Auto || strategy.EngineType == preferred).ToArray();
         StrategySelector.Items.Clear();
         foreach (var strategy in visible)
@@ -437,9 +528,10 @@ public partial class MainWindow : Window
             string.Equals(strategy.Id, selectedId, StringComparison.OrdinalIgnoreCase));
         StrategySelector.SelectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
 
-        var classic = _strategies.Where(strategy => strategy.EngineType == EngineType.Classic).ToArray();
+        var dashboardEngine = DashboardEngineSelector.SelectedIndex switch { 1 => EngineType.Classic, 2 => EngineType.NextGen, _ => EngineType.Auto };
+        var dashboardStrategies = _strategies.Where(strategy => strategy.EngineType == dashboardEngine).ToArray();
         DashboardStrategySelector.Items.Clear();
-        foreach (var strategy in classic)
+        foreach (var strategy in dashboardStrategies)
         {
             DashboardStrategySelector.Items.Add(new ComboBoxItem
             {
@@ -447,8 +539,9 @@ public partial class MainWindow : Window
                 Content = StrategyNames.DisplayName(strategy)
             });
         }
-        var dashboardIndex = classic.ToList().FindIndex(strategy =>
-            string.Equals(strategy.Id, _settings.ClassicStrategyId, StringComparison.OrdinalIgnoreCase));
+        var savedDashboardStrategy = dashboardEngine == EngineType.NextGen ? _settings.NextGenStrategyId : _settings.ClassicStrategyId;
+        var dashboardIndex = dashboardStrategies.ToList().FindIndex(strategy =>
+            string.Equals(strategy.Id, savedDashboardStrategy, StringComparison.OrdinalIgnoreCase));
         DashboardStrategySelector.SelectedIndex = dashboardIndex >= 0 ? dashboardIndex : 0;
     }
 
@@ -456,7 +549,8 @@ public partial class MainWindow : Window
         _settings.IpSetMode,
         _settings.GameFilterEnabled,
         _settings.GameFilterTcp,
-        _settings.GameFilterUdp);
+        _settings.GameFilterUdp,
+        ServiceTargetCatalog.EnabledFromSettings(_settings).ToArray());
 
     private void RefreshRuntimeDetails()
     {
@@ -493,13 +587,15 @@ public partial class MainWindow : Window
             {
                 ManualMode = true,
                 ManualStrategyId = strategyId,
-                ClassicStrategyId = applied?.EngineType == EngineType.Classic ? strategyId : _settings.ClassicStrategyId
+                ClassicStrategyId = applied?.EngineType == EngineType.Classic ? strategyId : _settings.ClassicStrategyId,
+                NextGenStrategyId = applied?.EngineType == EngineType.NextGen ? strategyId : _settings.NextGenStrategyId,
+                PreferredEngine = applied?.EngineType ?? _settings.PreferredEngine
             };
             ModeSelector.SelectedIndex = 1;
             ManualStrategyPanel.Visibility = Visibility.Visible;
             await _settingsService.SaveAsync(_settings, _lifetime.Token);
             var status = await _controller.ApplyStrategyAsync(strategyId, _lifetime.Token,
-                _settings.CheckYouTube, _settings.CheckDiscord, _settings.CheckVoice);
+                _settings.CheckYouTube, _settings.CheckDiscord, _settings.CheckVoice, ServiceTargetCatalog.EnabledFromSettings(_settings));
             UpdateStatus(status);
             ActivityText.Text = $"{StrategyNames.DisplayName(strategyId)}: Engine OK, WinDivert OK";
         }
@@ -528,7 +624,7 @@ public partial class MainWindow : Window
         if (_loadingSettings) return;
         _loadingSettings = true;
         DashboardEngineSelector.SelectedIndex = EngineSelector.SelectedIndex;
-        DashboardClassicStrategyPanel.Visibility = EngineSelector.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
+        DashboardClassicStrategyPanel.Visibility = EngineSelector.SelectedIndex == 0 ? Visibility.Collapsed : Visibility.Visible;
         PopulateStrategySelector();
         _loadingSettings = false;
         await SaveSettingsAsync();
@@ -555,17 +651,19 @@ public partial class MainWindow : Window
 
         _loadingSettings = true;
         EngineSelector.SelectedIndex = DashboardEngineSelector.SelectedIndex;
-        ModeSelector.SelectedIndex = requested == EngineType.Classic ? 1 : 0;
-        ManualStrategyPanel.Visibility = requested == EngineType.Classic ? Visibility.Visible : Visibility.Collapsed;
-        DashboardClassicStrategyPanel.Visibility = requested == EngineType.Classic ? Visibility.Visible : Visibility.Collapsed;
+        ModeSelector.SelectedIndex = requested == EngineType.Auto ? 0 : 1;
+        ManualStrategyPanel.Visibility = requested == EngineType.Auto ? Visibility.Collapsed : Visibility.Visible;
+        DashboardClassicStrategyPanel.Visibility = requested == EngineType.Auto ? Visibility.Collapsed : Visibility.Visible;
         PopulateStrategySelector();
-        var classicStrategy = DashboardSelectedStrategyId() ?? _settings.ClassicStrategyId;
+        var selectedStrategy = DashboardSelectedStrategyId()
+            ?? (requested == EngineType.NextGen ? _settings.NextGenStrategyId : _settings.ClassicStrategyId);
         _settings = _settings with
         {
             PreferredEngine = requested,
-            ManualMode = requested == EngineType.Classic,
-            ManualStrategyId = requested == EngineType.Classic ? classicStrategy : _settings.ManualStrategyId,
-            ClassicStrategyId = classicStrategy
+            ManualMode = requested != EngineType.Auto,
+            ManualStrategyId = requested == EngineType.Auto ? _settings.ManualStrategyId : selectedStrategy,
+            ClassicStrategyId = requested == EngineType.Classic ? selectedStrategy : _settings.ClassicStrategyId,
+            NextGenStrategyId = requested == EngineType.NextGen ? selectedStrategy : _settings.NextGenStrategyId
         };
         _loadingSettings = false;
         await _settingsService.SaveAsync(_settings, _lifetime.Token);
@@ -581,9 +679,17 @@ public partial class MainWindow : Window
     private async void DashboardStrategySelector_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingSettings || DashboardSelectedStrategyId() is not { } strategyId) return;
-        _settings = _settings with { PreferredEngine = EngineType.Classic, ManualMode = true, ManualStrategyId = strategyId, ClassicStrategyId = strategyId };
+        var strategy = _strategies.First(item => string.Equals(item.Id, strategyId, StringComparison.OrdinalIgnoreCase));
+        _settings = _settings with
+        {
+            PreferredEngine = strategy.EngineType,
+            ManualMode = true,
+            ManualStrategyId = strategyId,
+            ClassicStrategyId = strategy.EngineType == EngineType.Classic ? strategyId : _settings.ClassicStrategyId,
+            NextGenStrategyId = strategy.EngineType == EngineType.NextGen ? strategyId : _settings.NextGenStrategyId
+        };
         _loadingSettings = true;
-        EngineSelector.SelectedIndex = 1;
+        EngineSelector.SelectedIndex = strategy.EngineType == EngineType.NextGen ? 2 : 1;
         ModeSelector.SelectedIndex = 1;
         var matching = StrategySelector.Items.Cast<ComboBoxItem>().ToList().FindIndex(item => string.Equals(item.Tag as string, strategyId, StringComparison.OrdinalIgnoreCase));
         if (matching >= 0) StrategySelector.SelectedIndex = matching;
@@ -653,14 +759,21 @@ public partial class MainWindow : Window
         (to.RenderTransform as TranslateTransform)?.BeginAnimation(TranslateTransform.XProperty, slideIn);
     }
 
-    private void SetBusy(bool busy, string message) { PowerButton.IsEnabled = !busy; LatencyButton.IsEnabled = !busy; ApplyStrategyButton.IsEnabled = !busy; ActivityProgress.IsIndeterminate = busy; ActivityProgress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed; ActivityText.Text = message; }
+    private void SetBusy(bool busy, string message)
+    {
+        PowerButton.IsEnabled = !busy;
+        LatencyButton.IsEnabled = !busy && _status?.EngineRunning == true;
+        ApplyStrategyButton.IsEnabled = !busy;
+        ActivityProgress.IsIndeterminate = busy;
+        ActivityProgress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        ActivityText.Text = message;
+    }
     private void RestoreWindow() { Show(); WindowState = WindowState.Normal; Activate(); }
 
     private async Task ExitApplicationAsync()
     {
         _exitRequested = true;
         _lifetime.Cancel();
-        _latencyTester.Dispose();
         _updateService.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
@@ -698,7 +811,7 @@ public partial class MainWindow : Window
     }
     private async void ExportDiagnosticsButton_Click(object sender, RoutedEventArgs e)
     {
-        SetBusy(true, Localization.T("CheckingServices"));
+        SetBusy(true, Localization.T("CheckingSelectedServices"));
         try
         {
             var path = await _controller.ExportDiagnosticsAsync(token: _lifetime.Token);
@@ -729,14 +842,50 @@ public partial class MainWindow : Window
         if (_loadingSettings) return;
         if (ReferenceEquals(sender, CheckDiscordBox) && CheckDiscordBox.IsChecked != true)
             CheckVoiceBox.IsChecked = false;
+        var serviceToggle = sender is ToggleButton service &&
+            (ReferenceEquals(service, CheckYouTubeBox) || ReferenceEquals(service, CheckDiscordBox) || ReferenceEquals(service, CheckVoiceBox)
+             || ReferenceEquals(service, CheckChatGptBox) || ReferenceEquals(service, CheckInstagramBox) || ReferenceEquals(service, CheckTikTokBox)
+             || ReferenceEquals(service, CheckTelegramBox));
         if (sender is ToggleButton toggle
-            && (ReferenceEquals(toggle, CheckYouTubeBox) || ReferenceEquals(toggle, CheckDiscordBox) || ReferenceEquals(toggle, CheckVoiceBox))
-            && CheckYouTubeBox.IsChecked != true && CheckDiscordBox.IsChecked != true && CheckVoiceBox.IsChecked != true)
+            && serviceToggle
+            && CheckYouTubeBox.IsChecked != true && CheckDiscordBox.IsChecked != true && CheckVoiceBox.IsChecked != true
+            && CheckChatGptBox.IsChecked != true && CheckInstagramBox.IsChecked != true && CheckTikTokBox.IsChecked != true
+            && CheckTelegramBox.IsChecked != true)
         {
             toggle.IsChecked = true;
             return;
         }
+        if (serviceToggle) await ApplyServiceSettingsAsync();
+        else await SaveSettingsAsync();
+        UpdateSelectedTargetsText();
+    }
+
+    private async Task ApplyServiceSettingsAsync()
+    {
+        var previous = _settings;
         await SaveSettingsAsync();
+        try
+        {
+            var restart = false;
+            if (_controller.Status.EngineRunning)
+            {
+                restart = System.Windows.MessageBox.Show(this,
+                    "Для применения изменений нужно перезапустить обход.",
+                    Localization.T("AppName"), MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes;
+            }
+            var status = await _controller.ConfigureRuntimeAsync(RuntimeOptionsFromSettings(), restart,
+                _settings.CheckYouTube, _settings.CheckDiscord, _settings.CheckVoice,
+                ServiceTargetCatalog.EnabledFromSettings(_settings), _lifetime.Token);
+            UpdateStatus(status);
+            ActivityText.Text = restart ? Localization.T("ConnectionOptimized") : Localization.T("Ready");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _settings = previous;
+            ApplySettingsToControls();
+            await _settingsService.SaveAsync(_settings, _lifetime.Token);
+            System.Windows.MessageBox.Show(this, exception.Message, Localization.T("SettingsErrorTitle"), MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
     private async void RuntimeSetting_Changed(object sender, RoutedEventArgs e) => await ApplyRuntimeSettingsAsync();
     private async void RuntimeSetting_Changed(object sender, SelectionChangedEventArgs e) => await ApplyRuntimeSettingsAsync();
@@ -750,7 +899,8 @@ public partial class MainWindow : Window
         {
             SetBusy(true, Localization.T("ApplyingRuntimeSettings"));
             var status = await _controller.ConfigureRuntimeAsync(RuntimeOptionsFromSettings(), true,
-                _settings.CheckYouTube, _settings.CheckDiscord, _settings.CheckVoice, _lifetime.Token);
+                _settings.CheckYouTube, _settings.CheckDiscord, _settings.CheckVoice,
+                ServiceTargetCatalog.EnabledFromSettings(_settings), _lifetime.Token);
             RefreshRuntimeDetails();
             UpdateStatus(status);
         }
@@ -778,6 +928,20 @@ public partial class MainWindow : Window
     private void CopyCommandButton_Click(object sender, RoutedEventArgs e)
     {
         if (!string.IsNullOrWhiteSpace(CommandLineText.Text)) System.Windows.Clipboard.SetText(CommandLineText.Text);
+    }
+    private async void CompareGoldenButton_Click(object sender, RoutedEventArgs e)
+    {
+        var strategyId = _controller.Status.StrategyId ?? SelectedStrategyId() ?? _settings.ManualStrategyId;
+        try
+        {
+            var result = await _controller.CompareWithGoldenAsync(strategyId, _lifetime.Token);
+            var text = result.Match ? "MATCH" : "DIFFERENCES:" + Environment.NewLine + string.Join(Environment.NewLine, result.Differences.Take(50));
+            new DiagnosticsWindow("Golden Classic", strategyId, text) { Owner = this }.ShowDialog();
+        }
+        catch (Exception exception)
+        {
+            System.Windows.MessageBox.Show(this, exception.Message, "Golden Classic", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
     private async void StrategyListButton_Click(object sender, RoutedEventArgs e)
     {

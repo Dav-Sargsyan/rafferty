@@ -8,7 +8,9 @@ public sealed record RuntimeState(
     Rafferty.Shared.EngineType ActiveEngine = Rafferty.Shared.EngineType.Auto,
     string? LastSuccessfulStrategy = null,
     Rafferty.Shared.EngineType LastSuccessfulEngine = Rafferty.Shared.EngineType.Auto,
-    IReadOnlyList<StrategyHistoryEntry>? StrategyHistory = null);
+    IReadOnlyList<StrategyHistoryEntry>? StrategyHistory = null,
+    string? LastKnownGoodClassicStrategy = null,
+    string? LastKnownGoodNextGenStrategy = null);
 
 public sealed record StrategyHistoryEntry(
     string StrategyId,

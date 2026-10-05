@@ -1,6 +1,7 @@
 using System.Threading;
 using System.Windows;
 using System.IO;
+using Rafferty.Core;
 using Rafferty.Shared;
 
 namespace Rafferty.UI;
@@ -103,6 +104,29 @@ public partial class App : System.Windows.Application
                 Shutdown(status is { EngineRunning: true, DriverActive: true, StrategyApplied: true } ? 0 : 11);
                 return;
             }
+            var referenceCompatibleIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--reference-compatible", StringComparison.OrdinalIgnoreCase));
+            if (referenceCompatibleIndex >= 0 && referenceCompatibleIndex + 2 < e.Args.Length)
+            {
+                var strategyId = e.Args[referenceCompatibleIndex + 1];
+                var reportPath = Path.GetFullPath(e.Args[referenceCompatibleIndex + 2]);
+                EngineSnapshot? status = null;
+                try
+                {
+                    await _controller.ConfigureRuntimeAsync(new EngineRuntimeOptions(
+                        IpSetMode.Loaded, false, ReferenceCompatible: true), false);
+                    status = await _controller.ApplyStrategyAsync(strategyId, checkDiscord: false, checkVoice: false);
+                    var golden = await _controller.CompareWithGoldenAsync(strategyId);
+                    var report = new { strategyId, referenceCompatible = true, golden, status };
+                    Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
+                    await File.WriteAllTextAsync(reportPath, System.Text.Json.JsonSerializer.Serialize(report, JsonDefaults.Options));
+                }
+                finally
+                {
+                    await _controller.DisableAsync();
+                }
+                Shutdown(status is { EngineRunning: true, DriverActive: true, StrategyApplied: true } ? 0 : 14);
+                return;
+            }
             var manualStrategyIndex = Array.FindIndex(e.Args, argument => string.Equals(argument, "--manual-strategy", StringComparison.OrdinalIgnoreCase));
             if (manualStrategyIndex >= 0 && manualStrategyIndex + 2 < e.Args.Length)
             {
@@ -202,7 +226,8 @@ public partial class App : System.Windows.Application
                 settings.IpSetMode,
                 settings.GameFilterEnabled,
                 settings.GameFilterTcp,
-                settings.GameFilterUdp), false,
+                settings.GameFilterUdp,
+                ServiceTargetCatalog.EnabledFromSettings(settings).ToArray()), false,
                 settings.CheckYouTube, settings.CheckDiscord, settings.CheckVoice);
             Localization.Apply(settings.Language);
             var window = new MainWindow(_controller, _settingsService, settings);

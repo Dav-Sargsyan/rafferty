@@ -21,4 +21,16 @@
     <sys:String x:Key="Updates">UPDATES</sys:String><sys:String x:Key="CurrentVersion">Current version</sys:String><sys:String x:Key="AutoCheckUpdates">Automatically check for updates</sys:String><sys:String x:Key="AutoCheckUpdatesDescription">Check at most once every 24 hours. Installation always requires your approval.</sys:String><sys:String x:Key="CheckUpdates">Check for updates</sys:String><sys:String x:Key="UpdateNow">Update</sys:String><sys:String x:Key="UpdateNotChecked">Updates have not been checked yet.</sys:String><sys:String x:Key="CheckingUpdates">Checking for updates…</sys:String><sys:String x:Key="LatestVersionInstalled">The latest version is installed.</sys:String><sys:String x:Key="UpdateAvailable">Version {0} is available</sys:String><sys:String x:Key="DownloadingUpdate">Downloading update… {0:0}%</sys:String><sys:String x:Key="InstallingUpdate">Installing update… Rafferty will restart automatically.</sys:String><sys:String x:Key="UpdateError">Rafferty could not be updated: {0}</sys:String><sys:String x:Key="UpdateCheckFailed">Could not check for updates. See Logs for details.</sys:String><sys:String x:Key="UpdateInstallFailed">Could not install the update. See Logs for details.</sys:String><sys:String x:Key="DomainCount">Domains: {0}</sys:String><sys:String x:Key="ApplyingRuntimeSettings">Applying runtime settings…</sys:String>
     <sys:String x:Key="UpdateLater">Later</sys:String>
     <sys:String x:Key="UpdateDeferred">The update was postponed. You can check again at any time.</sys:String>
+    <sys:String x:Key="ServiceCheckDescription">Include this service in filtering and connectivity checks.</sys:String>
+    <sys:String x:Key="Services">SERVICES</sys:String>
+    <sys:String x:Key="BypassInactive">Bypass is off</sys:String>
+    <sys:String x:Key="RaffertyInactive">Rafferty is not active</sys:String>
+    <sys:String x:Key="ConnectingStatus">Connecting…</sys:String>
+    <sys:String x:Key="CheckingSelectedServices">Checking selected services</sys:String>
+    <sys:String x:Key="AllServicesWorking">Everything works</sys:String>
+    <sys:String x:Key="ServiceProblems">Some services have problems</sys:String>
+    <sys:String x:Key="BypassNotWorking">Bypass is not working</sys:String>
+    <sys:String x:Key="ServicesAvailable">{0} of {1} services available</sys:String>
+    <sys:String x:Key="UnavailableServices">Unavailable: {0}</sys:String>
+    <sys:String x:Key="SelectedServicesAvailable">Selected services are available</sys:String>
 </ResourceDictionary>

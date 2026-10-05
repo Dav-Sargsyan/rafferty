@@ -51,11 +51,18 @@ internal sealed class RaffertyController : IAsyncDisposable
         bool checkVoice = true,
         bool autoFindOnFailure = true,
         bool recheckOnStartup = false,
-        EngineType preferredEngine = EngineType.Auto)
+        EngineType preferredEngine = EngineType.Auto,
+        IReadOnlyCollection<string>? enabledTargetIds = null)
     {
         checkVoice &= checkDiscord;
+        var enabledTargets = enabledTargetIds ?? BuildEnabledTargets(checkYouTube, checkDiscord, checkVoice);
         var state = await _stateStore.LoadAsync(token).ConfigureAwait(false);
-        var savedStrategyId = state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId;
+        var savedStrategyId = preferredEngine switch
+        {
+            EngineType.Classic => state?.LastKnownGoodClassicStrategy ?? state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId,
+            EngineType.NextGen => state?.LastKnownGoodNextGenStrategy ?? state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId,
+            _ => state?.LastSuccessfulStrategy ?? state?.ActiveStrategyId
+        };
         var savedEngine = state?.LastSuccessfulEngine is not null and not EngineType.Auto
             ? state.LastSuccessfulEngine
             : state?.ActiveEngine ?? EngineType.Auto;
@@ -81,10 +88,10 @@ internal sealed class RaffertyController : IAsyncDisposable
                 await Engine.StartAsync(savedStrategyId, _reachability, token).ConfigureAwait(false);
                 var quick = recheckOnStartup
                     ? await Tester.RunDiagnosticsAsync(token).ConfigureAwait(false)
-                    : await Tester.RunQuickHealthCheckAsync(checkYouTube, checkDiscord, checkVoice, token).ConfigureAwait(false);
+                    : await Tester.RunQuickHealthCheckAsync(enabledTargets, token).ConfigureAwait(false);
                 _reachability = ConnectivityTester.Summarize(quick);
-                Engine.SetConnectivityVerified(SelectedServicesWorking(quick, checkYouTube, checkDiscord, checkVoice));
-                if (SelectedServicesWorking(quick, checkYouTube, checkDiscord, checkVoice))
+                Engine.SetConnectivityVerified(SelectedTargetsWorking(quick, enabledTargets));
+                if (SelectedTargetsWorking(quick, enabledTargets))
                 {
                     state = (state ?? new RuntimeState(null, [], null)) with
                     {
@@ -93,7 +100,9 @@ internal sealed class RaffertyController : IAsyncDisposable
                         LastSuccessfulStrategy = savedStrategyId,
                         LastSuccessfulEngine = Status.EngineType,
                         LastSuccessfulTest = DateTimeOffset.Now,
-                        StrategyHistory = MergeHistory(state?.StrategyHistory, [new(savedStrategyId, true, DateTimeOffset.Now)])
+                        StrategyHistory = MergeHistory(state?.StrategyHistory, [new(savedStrategyId, true, DateTimeOffset.Now)]),
+                        LastKnownGoodClassicStrategy = Status.EngineType == EngineType.Classic ? savedStrategyId : state?.LastKnownGoodClassicStrategy,
+                        LastKnownGoodNextGenStrategy = Status.EngineType == EngineType.NextGen ? savedStrategyId : state?.LastKnownGoodNextGenStrategy
                     };
                     await _stateStore.SaveAsync(state, token).ConfigureAwait(false);
                     _recoveryStage = 0;
@@ -124,7 +133,8 @@ internal sealed class RaffertyController : IAsyncDisposable
         var result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine,
             firstAutoEngine: savedEngine,
             priorityStrategyIds: priorityIds,
-            deprioritizedStrategyIds: recentFailures).ConfigureAwait(false);
+            deprioritizedStrategyIds: recentFailures,
+            enabledTargetIds: enabledTargets).ConfigureAwait(false);
         _lastOptimization = result;
         if (!result.Success || string.IsNullOrWhiteSpace(result.SelectedStrategyId))
         {
@@ -133,12 +143,14 @@ internal sealed class RaffertyController : IAsyncDisposable
 
         var selectedScore = result.Scores.Last(score => string.Equals(score.StrategyId, result.SelectedStrategyId, StringComparison.OrdinalIgnoreCase));
         _reachability = ReachabilityFromScore(selectedScore);
-        Engine.SetConnectivityVerified(true);
+        Engine.SetConnectivityVerified(result.FullyWorking);
         var backups = result.Scores.OrderByDescending(score => score.Score)
             .Where(score => !string.Equals(score.StrategyId, result.SelectedStrategyId, StringComparison.OrdinalIgnoreCase))
             .Take(3).Select(score => score.StrategyId).ToArray();
         await _stateStore.SaveAsync(new(result.SelectedStrategyId, backups, DateTimeOffset.Now, NetworkIdentity.GetCurrent(), Status.EngineType,
-            result.SelectedStrategyId, Status.EngineType, MergeHistory(history, HistoryFromScores(result.Scores))), token).ConfigureAwait(false);
+            result.SelectedStrategyId, Status.EngineType, MergeHistory(history, HistoryFromScores(result.Scores)),
+            Status.EngineType == EngineType.Classic ? result.SelectedStrategyId : state?.LastKnownGoodClassicStrategy,
+            Status.EngineType == EngineType.NextGen ? result.SelectedStrategyId : state?.LastKnownGoodNextGenStrategy), token).ConfigureAwait(false);
         _recoveryStage = 0;
         return Status;
     }
@@ -158,6 +170,7 @@ internal sealed class RaffertyController : IAsyncDisposable
         bool checkYouTube = true,
         bool checkDiscord = true,
         bool checkVoice = true,
+        IReadOnlyCollection<string>? enabledTargetIds = null,
         CancellationToken token = default)
     {
         var activeStrategy = Status.EngineRunning ? Status.StrategyId : null;
@@ -169,9 +182,10 @@ internal sealed class RaffertyController : IAsyncDisposable
         if (restartIfActive && !string.IsNullOrWhiteSpace(activeStrategy))
         {
             await Engine.StartAsync(activeStrategy, ReachabilitySnapshot.Unknown, token).ConfigureAwait(false);
-            var quick = await Tester.RunQuickHealthCheckAsync(checkYouTube, checkDiscord, checkVoice, token).ConfigureAwait(false);
+            var enabledTargets = enabledTargetIds ?? BuildEnabledTargets(checkYouTube, checkDiscord, checkVoice);
+            var quick = await Tester.RunQuickHealthCheckAsync(enabledTargets, token).ConfigureAwait(false);
             _reachability = ConnectivityTester.Summarize(quick);
-            Engine.SetConnectivityVerified(SelectedServicesWorking(quick, checkYouTube, checkDiscord, checkVoice));
+            Engine.SetConnectivityVerified(SelectedTargetsWorking(quick, enabledTargets));
         }
         return Status;
     }
@@ -196,28 +210,40 @@ internal sealed class RaffertyController : IAsyncDisposable
     public Task<string> GetCommandLineAsync(string strategyId, CancellationToken token = default) =>
         Engine.GetCommandLineAsync(strategyId, false, token);
 
+    public async Task<GoldenComparisonResult> CompareWithGoldenAsync(string strategyId, CancellationToken token = default)
+    {
+        var strategy = await _strategies!.GetAsync(strategyId, token).ConfigureAwait(false);
+        if (strategy.EngineType != EngineType.Classic)
+            return new(false, ["Golden comparison is available only for Classic strategies."]);
+        return await GoldenStrategyComparer.CompareAsync(strategy, AppPaths.GoldenClassicStrategiesFile, token).ConfigureAwait(false);
+    }
+
     public async Task<EngineSnapshot> ApplyStrategyAsync(
         string strategyId,
         CancellationToken token = default,
         bool checkYouTube = true,
         bool checkDiscord = true,
-        bool checkVoice = true)
+        bool checkVoice = true,
+        IReadOnlyCollection<string>? enabledTargetIds = null)
     {
         checkVoice &= checkDiscord;
+        var enabledTargets = enabledTargetIds ?? BuildEnabledTargets(checkYouTube, checkDiscord, checkVoice);
         var strategy = await _strategies!.GetAsync(strategyId, token).ConfigureAwait(false);
         await Engine.StopAsync(_reachability, token).ConfigureAwait(false);
         try
         {
             await Engine.StartAsync(strategy.Id, ReachabilitySnapshot.Unknown, token).ConfigureAwait(false);
-            var diagnostics = await Tester.RunQuickHealthCheckAsync(checkYouTube, checkDiscord, checkVoice, token).ConfigureAwait(false);
+            var diagnostics = await Tester.RunQuickHealthCheckAsync(enabledTargets, token).ConfigureAwait(false);
             _reachability = ConnectivityTester.Summarize(diagnostics);
-            var verified = SelectedServicesWorking(diagnostics, checkYouTube, checkDiscord, checkVoice);
+            var verified = SelectedTargetsWorking(diagnostics, enabledTargets);
             Engine.SetConnectivityVerified(verified);
             var previous = await _stateStore.LoadAsync(token).ConfigureAwait(false);
             await _stateStore.SaveAsync(new(strategy.Id, [], DateTimeOffset.Now, NetworkIdentity.GetCurrent(), strategy.EngineType,
                 verified ? strategy.Id : previous?.LastSuccessfulStrategy,
                 verified ? strategy.EngineType : previous?.LastSuccessfulEngine ?? EngineType.Auto,
-                MergeHistory(previous?.StrategyHistory, [new(strategy.Id, verified, DateTimeOffset.Now)])), token).ConfigureAwait(false);
+                MergeHistory(previous?.StrategyHistory, [new(strategy.Id, verified, DateTimeOffset.Now)]),
+                verified && strategy.EngineType == EngineType.Classic ? strategy.Id : previous?.LastKnownGoodClassicStrategy,
+                verified && strategy.EngineType == EngineType.NextGen ? strategy.Id : previous?.LastKnownGoodNextGenStrategy), token).ConfigureAwait(false);
             return Status;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
@@ -234,32 +260,49 @@ internal sealed class RaffertyController : IAsyncDisposable
         bool checkDiscord = true,
         bool checkVoice = true,
         EngineType preferredEngine = EngineType.Auto,
-        bool deepSearch = true)
+        bool deepSearch = true,
+        IReadOnlyCollection<string>? enabledTargetIds = null)
     {
         checkVoice &= checkDiscord;
+        var enabledTargets = enabledTargetIds ?? BuildEnabledTargets(checkYouTube, checkDiscord, checkVoice);
         await Engine.StopAsync(_reachability, token).ConfigureAwait(false);
         var previous = await _stateStore.LoadAsync(token).ConfigureAwait(false);
         await _stateStore.SaveAsync((previous ?? new RuntimeState(null, [], null)) with { ActiveStrategyId = null, BackupStrategyIds = [] }, token).ConfigureAwait(false);
         if (deepSearch)
         {
-            var result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine, deepSearch: true).ConfigureAwait(false);
+            var result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine,
+                deepSearch: true, enabledTargetIds: enabledTargets).ConfigureAwait(false);
             _lastOptimization = result;
             if (!result.Success || string.IsNullOrWhiteSpace(result.SelectedStrategyId)) throw new InvalidOperationException(result.Message);
             var strategy = await _strategies!.GetAsync(result.SelectedStrategyId, token).ConfigureAwait(false);
             var selectedScore = result.Scores.Last(score => string.Equals(score.StrategyId, strategy.Id, StringComparison.OrdinalIgnoreCase));
             _reachability = ReachabilityFromScore(selectedScore);
             await _stateStore.SaveAsync(new(strategy.Id, [], DateTimeOffset.Now, NetworkIdentity.GetCurrent(), strategy.EngineType,
-                strategy.Id, strategy.EngineType, MergeHistory(previous?.StrategyHistory, HistoryFromScores(result.Scores))), token).ConfigureAwait(false);
+                strategy.Id, strategy.EngineType, MergeHistory(previous?.StrategyHistory, HistoryFromScores(result.Scores)),
+                strategy.EngineType == EngineType.Classic ? strategy.Id : previous?.LastKnownGoodClassicStrategy,
+                strategy.EngineType == EngineType.NextGen ? strategy.Id : previous?.LastKnownGoodNextGenStrategy), token).ConfigureAwait(false);
             return Status;
         }
-        return await EnableAsync(progress, token, checkYouTube, checkDiscord, checkVoice, autoFindOnFailure: true, preferredEngine: preferredEngine).ConfigureAwait(false);
+        return await EnableAsync(progress, token, checkYouTube, checkDiscord, checkVoice, autoFindOnFailure: true,
+            preferredEngine: preferredEngine, enabledTargetIds: enabledTargets).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<DiagnosticResult>> RunDiagnosticsAsync(CancellationToken token = default)
     {
-        var results = await Tester.RunDiagnosticsAsync(token).ConfigureAwait(false);
+        var enabled = Engine.RuntimeOptions.EnabledServiceIds is { Count: > 0 } selected
+            ? selected
+            : new[] { ServiceTargetCatalog.YouTube, ServiceTargetCatalog.Discord, ServiceTargetCatalog.Voice };
+        return await RunDiagnosticsAsync(enabled, token).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<DiagnosticResult>> RunDiagnosticsAsync(
+        IReadOnlyCollection<string> enabledTargets,
+        CancellationToken token = default)
+    {
+        var results = await Tester.RunDiagnosticsAsync(enabledTargets, token).ConfigureAwait(false);
         _reachability = ConnectivityTester.Summarize(results);
-        if (Engine.Snapshot(_reachability).EngineRunning) Engine.SetConnectivityVerified(CriticalChecksPassed(results));
+        if (Engine.Snapshot(_reachability).EngineRunning)
+            Engine.SetConnectivityVerified(SelectedTargetsWorking(results, enabledTargets));
         return results;
     }
 
@@ -285,10 +328,14 @@ internal sealed class RaffertyController : IAsyncDisposable
 
     public async Task<string> ExportDiagnosticsAsync(string? outputPath = null, CancellationToken token = default)
     {
-        var diagnostics = await RunDiagnosticsAsync(token).ConfigureAwait(false);
+        var enabledTargets = Engine.RuntimeOptions.EnabledServiceIds is { Count: > 0 } selected
+            ? selected
+            : new[] { ServiceTargetCatalog.YouTube, ServiceTargetCatalog.Discord, ServiceTargetCatalog.Voice };
+        var diagnostics = await RunDiagnosticsAsync(enabledTargets, token).ConfigureAwait(false);
         var snapshot = Status;
         var persistedState = await _stateStore.LoadAsync(token).ConfigureAwait(false);
         var selectedStrategy = snapshot.StrategyId ?? persistedState?.ActiveStrategyId;
+        var selectedDefinition = selectedStrategy is null ? null : await _strategies!.GetAsync(selectedStrategy, token).ConfigureAwait(false);
         var activeExecutable = snapshot.EngineType == EngineType.NextGen ? AppPaths.NextGenEngineExecutable : AppPaths.ClassicEngineExecutable;
         var version = FileVersionInfo.GetVersionInfo(activeExecutable).FileVersion ?? "unknown";
         var lists = new List<object>();
@@ -302,6 +349,7 @@ internal sealed class RaffertyController : IAsyncDisposable
             ? File.ReadLines(logPath).Where(line => line.Contains("[ERROR]", StringComparison.OrdinalIgnoreCase)).TakeLast(100)
                 .Select(Sanitize).ToArray()
             : [];
+        IReadOnlyList<object> requiredFiles = selectedDefinition is null ? [] : VerifyStrategyFiles(selectedDefinition);
         var report = new
         {
             product = "Rafferty",
@@ -319,8 +367,13 @@ internal sealed class RaffertyController : IAsyncDisposable
             strategyApplied = snapshot.StrategyApplied,
             connectivityVerified = snapshot.ConnectivityVerified,
             selectedStrategy,
+            lastKnownGoodClassicStrategy = persistedState?.LastKnownGoodClassicStrategy,
+            lastKnownGoodNextGenStrategy = persistedState?.LastKnownGoodNextGenStrategy,
+            enabledServices = Engine.RuntimeOptions.EnabledServiceIds ?? [],
             processId = snapshot.ProcessId,
-            commandLine = selectedStrategy is null ? null : await Engine.GetCommandLineAsync(selectedStrategy, true, token).ConfigureAwait(false),
+            actualCommandLine = selectedStrategy is null ? null : await Engine.GetCommandLineAsync(selectedStrategy, false, token).ConfigureAwait(false),
+            sanitizedCommandLine = selectedStrategy is null ? null : await Engine.GetCommandLineAsync(selectedStrategy, true, token).ConfigureAwait(false),
+            requiredFileVerification = requiredFiles,
             connectivity = diagnostics,
             listFiles = lists,
             engineErrors = errors
@@ -330,6 +383,25 @@ internal sealed class RaffertyController : IAsyncDisposable
         var path = outputPath is null ? Path.Combine(directory, $"Rafferty-diagnostics-{DateTime.Now:yyyyMMdd-HHmmss}.json") : Path.GetFullPath(outputPath);
         await File.WriteAllTextAsync(path, JsonSerializer.Serialize(report, JsonDefaults.Options), token).ConfigureAwait(false);
         return path;
+    }
+
+    private static IReadOnlyList<object> VerifyStrategyFiles(Strategy strategy)
+    {
+        var engineRoot = strategy.EngineType == EngineType.NextGen ? AppPaths.NextGenEngineDirectory : AppPaths.ClassicEngineDirectory;
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var relative in (strategy.LuaFiles ?? []).Concat(strategy.RequiredFiles ?? []))
+            files.Add(Path.Combine(engineRoot, relative));
+        foreach (var argument in strategy.Arguments)
+        {
+            var separator = argument.IndexOf('=');
+            if (separator < 0) continue;
+            var value = argument[(separator + 1)..];
+            if (value.StartsWith("{engine}\\", StringComparison.OrdinalIgnoreCase)) files.Add(Path.Combine(engineRoot, value[9..]));
+            if (value.StartsWith("{lists}\\", StringComparison.OrdinalIgnoreCase)) files.Add(Path.Combine(AppPaths.ListsDirectory, value[8..]));
+        }
+        return files.Order(StringComparer.OrdinalIgnoreCase)
+            .Select(path => (object)new { file = Path.GetFileName(path), path = Sanitize(path), exists = File.Exists(path) })
+            .ToArray();
     }
 
     public async Task ExportCommandLinesAsync(string path, CancellationToken token = default)
@@ -416,15 +488,31 @@ internal sealed class RaffertyController : IAsyncDisposable
             && (!checkVoice || summary.DiscordVoice == ServiceReachability.Working);
     }
 
+    private static IReadOnlyCollection<string> BuildEnabledTargets(bool checkYouTube, bool checkDiscord, bool checkVoice)
+    {
+        var targets = new List<string>();
+        if (checkYouTube) targets.Add(ServiceTargetCatalog.YouTube);
+        if (checkDiscord) targets.Add(ServiceTargetCatalog.Discord);
+        if (checkVoice && checkDiscord) targets.Add(ServiceTargetCatalog.Voice);
+        return targets;
+    }
+
+    private static bool SelectedTargetsWorking(IReadOnlyList<DiagnosticResult> results, IReadOnlyCollection<string> enabledTargets)
+    {
+        var states = ServiceTargetCatalog.SummarizeTargets(results, enabledTargets);
+        return enabledTargets.All(id => states.TryGetValue(id, out var state) && state == ServiceReachability.Working);
+    }
+
     private static ReachabilitySnapshot ReachabilityFromScore(StrategyScore score) => new(
-        ServiceReachability.NotTested, score.YouTube, score.Discord, score.Voice, DateTimeOffset.Now);
+        ServiceReachability.NotTested, score.YouTube, score.Discord, score.Voice, DateTimeOffset.Now, score.TargetResults);
 
     private static IReadOnlyList<StrategyHistoryEntry> HistoryFromScores(IEnumerable<StrategyScore> scores) =>
         scores.Select(score => new StrategyHistoryEntry(score.StrategyId,
             score.EngineStarted && score.DriverActive && score.Errors == 0
-                && score.YouTube is ServiceReachability.Working or ServiceReachability.NotTested
-                && score.Discord is ServiceReachability.Working or ServiceReachability.NotTested
-                && score.Voice is ServiceReachability.Working or ServiceReachability.NotTested,
+                && (score.TargetResults?.Values.All(state => state is ServiceReachability.Working or ServiceReachability.NotTested)
+                    ?? ((score.YouTube is ServiceReachability.Working or ServiceReachability.NotTested)
+                        && (score.Discord is ServiceReachability.Working or ServiceReachability.NotTested)
+                        && (score.Voice is ServiceReachability.Working or ServiceReachability.NotTested))),
             DateTimeOffset.Now)).ToArray();
 
     private static IReadOnlyList<StrategyHistoryEntry> MergeHistory(

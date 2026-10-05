@@ -1,0 +1,8 @@
+# Instagram frontend, API and media delivery
+instagram.com
+graph.instagram.com
+cdninstagram.com
+fbcdn.net
+instagram.fiev22-1.fna.fbcdn.net
+static.cdninstagram.com
+i.instagram.com

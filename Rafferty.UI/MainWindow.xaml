@@ -39,16 +39,19 @@
             <Button x:Name="PowerButton" Content="{DynamicResource Enable}" Style="{StaticResource PowerButton}" Click="PowerButton_Click"/>
             <TextBlock x:Name="ProtectionText" Text="{DynamicResource NotActive}" Foreground="{StaticResource MutedTextBrush}" FontSize="10" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,2,0,8"/>
           </StackPanel>
-          <Border Grid.Row="2" Style="{StaticResource Card}" Padding="16,9">
-            <StackPanel>
-              <Grid Height="37"><Ellipse x:Name="YoutubeDot" Width="8" Height="8" Fill="#4B5060" HorizontalAlignment="Left"/><TextBlock Text="YouTube" Margin="20,0,0,0" VerticalAlignment="Center"/><StackPanel HorizontalAlignment="Right" VerticalAlignment="Center"><TextBlock x:Name="YoutubeState" Text="{DynamicResource Waiting}" Foreground="{StaticResource SecondaryTextBrush}" HorizontalAlignment="Right"/><TextBlock x:Name="YoutubeLatency" Text="—" FontSize="9" Foreground="{StaticResource MutedTextBrush}" HorizontalAlignment="Right"/></StackPanel></Grid>
-              <Border Height="1" Background="#202632"/>
-              <Grid Height="37"><Ellipse x:Name="DiscordDot" Width="8" Height="8" Fill="#4B5060" HorizontalAlignment="Left"/><TextBlock Text="Discord" Margin="20,0,0,0" VerticalAlignment="Center"/><StackPanel HorizontalAlignment="Right" VerticalAlignment="Center"><TextBlock x:Name="DiscordState" Text="{DynamicResource Waiting}" Foreground="{StaticResource SecondaryTextBrush}" HorizontalAlignment="Right"/><TextBlock x:Name="DiscordLatency" Text="—" FontSize="9" Foreground="{StaticResource MutedTextBrush}" HorizontalAlignment="Right"/></StackPanel></Grid>
-              <Border Height="1" Background="#202632"/>
-              <Grid Height="37"><Ellipse x:Name="VoiceDot" Width="8" Height="8" Fill="#4B5060" HorizontalAlignment="Left"/><TextBlock Text="{DynamicResource Voice}" Margin="20,0,0,0" VerticalAlignment="Center"/><StackPanel HorizontalAlignment="Right" VerticalAlignment="Center"><TextBlock x:Name="VoiceState" Text="{DynamicResource Waiting}" Foreground="{StaticResource SecondaryTextBrush}" HorizontalAlignment="Right"/><TextBlock x:Name="VoiceLatency" Text="—" FontSize="9" Foreground="{StaticResource MutedTextBrush}" HorizontalAlignment="Right"/></StackPanel></Grid>
-              <Button x:Name="LatencyButton" Content="{DynamicResource TestLatency}" Margin="0,8,0,0" Click="LatencyButton_Click"/>
-              <TextBlock x:Name="LastTestText" Text="{DynamicResource NotTested}" FontSize="9" Foreground="{StaticResource MutedTextBrush}" HorizontalAlignment="Center" Margin="0,5,0,0"/>
-            </StackPanel>
+          <Border Grid.Row="2" Style="{StaticResource Card}" Padding="16,13">
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+              <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+              <Ellipse x:Name="SummaryStatusDot" Width="9" Height="9" Fill="#87535A" VerticalAlignment="Center" Margin="0,0,10,0"/>
+              <TextBlock x:Name="SummaryStatusTitle" Grid.Column="1" Text="{DynamicResource BypassInactive}" FontSize="14" FontWeight="SemiBold" Foreground="#C88189" VerticalAlignment="Center"/>
+              <Button Grid.Column="2" Grid.RowSpan="2" x:Name="LatencyButton" Content="↻" ToolTip="{DynamicResource TestLatency}" Width="34" Height="28" MinHeight="28" Padding="0" VerticalAlignment="Top" Click="LatencyButton_Click"/>
+              <TextBlock x:Name="SummaryStatusText" Grid.Column="1" Grid.Row="1" Text="{DynamicResource RaffertyInactive}" FontSize="11" Foreground="{StaticResource SecondaryTextBrush}" Margin="0,4,42,0" TextWrapping="Wrap" MaxHeight="32"/>
+              <Grid Grid.Column="1" Grid.Row="2" Grid.ColumnSpan="2" Margin="0,6,0,0">
+                <TextBlock x:Name="SummaryTargetsText" Foreground="{StaticResource MutedTextBrush}" FontSize="9" TextTrimming="CharacterEllipsis"/>
+                <TextBlock x:Name="LastTestText" Foreground="{StaticResource MutedTextBrush}" FontSize="9" HorizontalAlignment="Right"/>
+              </Grid>
+            </Grid>
           </Border>
           <Border Grid.Row="3" Style="{StaticResource Card}" Padding="16,11" Margin="0,10,0,0">
             <Grid>
@@ -103,7 +106,7 @@
                 <Grid Height="48"><StackPanel VerticalAlignment="Center"><TextBlock Text="{DynamicResource StartEnabled}"/><TextBlock Text="{DynamicResource StartEnabledDescription}" FontSize="9" Foreground="{StaticResource MutedTextBrush}"/></StackPanel><ToggleButton x:Name="StartEnabledToggle" Style="{StaticResource ToggleSwitch}" HorizontalAlignment="Right" Click="SettingToggle_Click"/></Grid>
               </StackPanel></Border>
 
-              <TextBlock Text="{DynamicResource AutoOptimization}" FontSize="9" Foreground="{StaticResource MutedTextBrush}" Margin="4,12,0,5"/>
+              <TextBlock Text="{DynamicResource Services}" FontSize="9" Foreground="{StaticResource MutedTextBrush}" Margin="4,12,0,5"/>
               <Border Style="{StaticResource Card}" Padding="16,6"><StackPanel>
                 <Grid MinHeight="58"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center"><TextBlock Text="YouTube" FontWeight="SemiBold"/><TextBlock Text="{DynamicResource YouTubeCheckDescription}" FontSize="9" Foreground="{StaticResource MutedTextBrush}"/></StackPanel><ToggleButton x:Name="CheckYouTubeBox" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" Click="SettingToggle_Click"/></Grid>
                 <Border Height="1" Background="#202632"/>
@@ -111,6 +114,17 @@
                 <Border Height="1" Background="#202632"/>
                 <Grid MinHeight="58"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center"><TextBlock Text="{DynamicResource Voice}" FontWeight="SemiBold"/><TextBlock Text="{DynamicResource VoiceCheckDescription}" FontSize="9" Foreground="{StaticResource MutedTextBrush}"/></StackPanel><ToggleButton x:Name="CheckVoiceBox" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" Click="SettingToggle_Click"/></Grid>
                 <Border Height="1" Background="#202632"/>
+                <Grid MinHeight="58"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center"><TextBlock Text="ChatGPT" FontWeight="SemiBold"/><TextBlock Text="{DynamicResource ServiceCheckDescription}" FontSize="9" Foreground="{StaticResource MutedTextBrush}"/></StackPanel><ToggleButton x:Name="CheckChatGptBox" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" Click="SettingToggle_Click"/></Grid>
+                <Border Height="1" Background="#202632"/>
+                <Grid MinHeight="58"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center"><TextBlock Text="Instagram" FontWeight="SemiBold"/><TextBlock Text="{DynamicResource ServiceCheckDescription}" FontSize="9" Foreground="{StaticResource MutedTextBrush}"/></StackPanel><ToggleButton x:Name="CheckInstagramBox" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" Click="SettingToggle_Click"/></Grid>
+                <Border Height="1" Background="#202632"/>
+                <Grid MinHeight="58"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center"><TextBlock Text="TikTok" FontWeight="SemiBold"/><TextBlock Text="{DynamicResource ServiceCheckDescription}" FontSize="9" Foreground="{StaticResource MutedTextBrush}"/></StackPanel><ToggleButton x:Name="CheckTikTokBox" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" Click="SettingToggle_Click"/></Grid>
+                <Border Height="1" Background="#202632"/>
+                <Grid MinHeight="58"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center"><TextBlock Text="Telegram" FontWeight="SemiBold"/><TextBlock Text="{DynamicResource ServiceCheckDescription}" FontSize="9" Foreground="{StaticResource MutedTextBrush}"/></StackPanel><ToggleButton x:Name="CheckTelegramBox" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" Click="SettingToggle_Click"/></Grid>
+              </StackPanel></Border>
+
+              <TextBlock Text="{DynamicResource AutoOptimization}" FontSize="9" Foreground="{StaticResource MutedTextBrush}" Margin="4,12,0,5"/>
+              <Border Style="{StaticResource Card}" Padding="16,6"><StackPanel>
                 <Grid MinHeight="64"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center" Margin="0,5,12,5"><TextBlock Text="{DynamicResource AutoFindOnFailure}"/><TextBlock Text="{DynamicResource AutoFindOnFailureDescription}" FontSize="9" Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap"/></StackPanel><ToggleButton x:Name="AutoFindOnFailureToggle" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" Click="SettingToggle_Click"/></Grid>
                 <Border Height="1" Background="#202632"/>
                 <Grid MinHeight="64"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center" Margin="0,5,12,5"><TextBlock Text="{DynamicResource RecheckOnStartup}"/><TextBlock Text="{DynamicResource RecheckOnStartupDescription}" FontSize="9" Foreground="{StaticResource MutedTextBrush}" TextWrapping="Wrap"/></StackPanel><ToggleButton x:Name="RecheckOnStartupToggle" Grid.Column="1" Style="{StaticResource ToggleSwitch}" VerticalAlignment="Center" Click="SettingToggle_Click"/></Grid>
@@ -146,6 +160,7 @@
             <TextBlock Text="{DynamicResource RawEngineCommand}" FontSize="9" Foreground="{StaticResource MutedTextBrush}" Margin="4,12,0,5"/>
             <TextBox x:Name="CommandLineText" IsReadOnly="True" TextWrapping="Wrap" Height="112" VerticalScrollBarVisibility="Auto" Padding="10" FontFamily="Consolas" FontSize="10"/>
             <Button Content="{DynamicResource CopyCommand}" Margin="0,8,0,0" Click="CopyCommandButton_Click"/>
+            <Button x:Name="CompareGoldenButton" Content="Compare with Golden" Margin="0,8,0,0" Visibility="Collapsed" Click="CompareGoldenButton_Click"/>
             <TextBlock Text="{DynamicResource RuntimeConfiguration}" FontSize="9" Foreground="{StaticResource MutedTextBrush}" Margin="4,12,0,5"/>
             <Border Style="{StaticResource Card}" Padding="14"><StackPanel>
               <Grid MinHeight="56"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center" Margin="0,5,12,5"><TextBlock Text="{DynamicResource CustomDomains}"/><TextBlock x:Name="CustomDomainsCountText" Text="—" FontSize="9" Foreground="{StaticResource MutedTextBrush}"/></StackPanel><Button Grid.Column="1" Content="{DynamicResource Edit}" Width="104" Height="36" VerticalAlignment="Center" Click="EditCustomDomainsButton_Click"/></Grid>

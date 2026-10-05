@@ -3,12 +3,52 @@ using Rafferty.Shared;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Xunit;
 
 namespace Rafferty.Core.Tests;
 
 public sealed class StrategyTests
 {
+    private static string TestData(string name) => Path.Combine(AppContext.BaseDirectory, "TestData", name);
+
+    [Fact]
+    public async Task EveryBundledClassicStrategyMatchesPinnedGoldenSnapshot()
+    {
+        var current = await JsonSerializer.DeserializeAsync<StrategyDatabase>(File.OpenRead(TestData("strategies.json")), JsonDefaults.Options);
+        Assert.NotNull(current);
+        Assert.Equal(22, current.Strategies.Count);
+        foreach (var strategy in current.Strategies)
+        {
+            var comparison = await GoldenStrategyComparer.CompareAsync(strategy, TestData("golden-classic.json"));
+            Assert.True(comparison.Match, $"{strategy.Id}: {string.Join(Environment.NewLine, comparison.Differences)}");
+        }
+    }
+
+    [Fact]
+    public async Task BundledStrategiesReferenceOnlyExistingRuntimeFiles()
+    {
+        var classic = await JsonSerializer.DeserializeAsync<StrategyDatabase>(File.OpenRead(TestData("strategies.json")), JsonDefaults.Options);
+        var nextGen = await JsonSerializer.DeserializeAsync<StrategyDatabase>(File.OpenRead(TestData("nextgen-strategies.json")), JsonDefaults.Options);
+        Assert.NotNull(classic);
+        Assert.NotNull(nextGen);
+        Assert.NotEmpty(nextGen.Strategies);
+
+        foreach (var strategy in classic.Strategies.Concat(nextGen.Strategies))
+        {
+            var engineRoot = TestData(strategy.EngineType == EngineType.NextGen ? "engine-nextgen" : "engine");
+            foreach (var file in (strategy.LuaFiles ?? []).Concat(strategy.RequiredFiles ?? []))
+                Assert.True(File.Exists(Path.Combine(engineRoot, file)), $"{strategy.Id} requires missing {file}");
+            foreach (var argument in strategy.Arguments)
+            {
+                var value = argument[(argument.IndexOf('=') + 1)..];
+                if (value.StartsWith("{engine}\\", StringComparison.OrdinalIgnoreCase))
+                    Assert.True(File.Exists(Path.Combine(engineRoot, value[9..])), $"{strategy.Id} requires missing {value}");
+                if (value.StartsWith("{lists}\\", StringComparison.OrdinalIgnoreCase))
+                    Assert.True(File.Exists(Path.Combine(TestData("lists"), value[8..])), $"{strategy.Id} requires missing {value}");
+            }
+        }
+    }
     [Fact]
     public void Strategy_DefaultsToClassicAndRejectsAutoEngine()
     {
@@ -126,6 +166,127 @@ public sealed class StrategyTests
         Assert.True(youtubeOnly.Score > allServices.Score);
     }
 
+    [Fact]
+    public void Score_PreservesPartialResultsForEverySelectedTarget()
+    {
+        DiagnosticResult[] results =
+        [
+            new("chatgpt-web", "ChatGPT Web", DiagnosticState.Success, "ok", 30),
+            new("chatgpt-api", "OpenAI API", DiagnosticState.Error, "blocked", 200),
+            new("chatgpt-static", "ChatGPT CDN", DiagnosticState.Success, "ok", 40),
+            new("instagram-web", "Instagram Web", DiagnosticState.Error, "blocked", 200),
+            new("instagram-api", "Instagram API", DiagnosticState.Error, "blocked", 200),
+            new("instagram-media", "Instagram CDN", DiagnosticState.Error, "blocked", 200)
+        ];
+
+        var score = StrategyScorer.Calculate("partial", results, TimeSpan.Zero,
+            [ServiceTargetCatalog.ChatGpt, ServiceTargetCatalog.Instagram]);
+
+        Assert.NotNull(score.TargetResults);
+        Assert.Equal(ServiceReachability.Degraded, score.TargetResults[ServiceTargetCatalog.ChatGpt]);
+        Assert.Equal(ServiceReachability.Unavailable, score.TargetResults[ServiceTargetCatalog.Instagram]);
+        Assert.InRange(score.Score, 20, 30);
+    }
+
+    [Fact]
+    public void ServiceListManager_MergesSelectedPacksAndPreservesCustomEntries()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RaffertyTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(directory, "services"));
+        try
+        {
+            File.WriteAllLines(Path.Combine(directory, "list-general-user.txt"), ["custom.example"]);
+            File.WriteAllLines(Path.Combine(directory, "list-general.txt"), ["base.example", "www.chatgpt.com"]);
+            File.WriteAllLines(Path.Combine(directory, "list-exclude.txt"), ["blocked.example"]);
+            File.WriteAllLines(Path.Combine(directory, "services", "chatgpt.txt"), ["chatgpt.com", "blocked.example"]);
+            File.WriteAllLines(Path.Combine(directory, "services", "instagram.txt"), ["instagram.com"]);
+
+            ServiceListManager.Apply(directory, [ServiceTargetCatalog.ChatGpt]);
+            var first = File.ReadAllLines(Path.Combine(directory, "active-hostlist.txt"));
+            Assert.Contains("custom.example", first);
+            Assert.Contains("base.example", first);
+            Assert.Contains("chatgpt.com", first);
+            Assert.DoesNotContain("blocked.example", first);
+            Assert.DoesNotContain("instagram.com", first);
+
+            ServiceListManager.Apply(directory, [ServiceTargetCatalog.Instagram]);
+            var second = File.ReadAllLines(Path.Combine(directory, "active-hostlist.txt"));
+            Assert.Contains("custom.example", second);
+            Assert.Contains("instagram.com", second);
+            Assert.DoesNotContain("chatgpt.com", second);
+            Assert.DoesNotContain("www.chatgpt.com", second);
+            Assert.Equal(["custom.example"], File.ReadAllLines(Path.Combine(directory, "list-general-user.txt")));
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public void UserSettings_RoundTripKeepsNextGenAndServiceSelection()
+    {
+        var expected = new UserSettings(PreferredEngine: EngineType.NextGen,
+            NextGenStrategyId: "nextgen-discord", CheckChatGpt: false, CheckInstagram: true, CheckTikTok: true,
+            CheckTelegram: true, Services: new(TikTok: true, Telegram: true));
+
+        var actual = JsonSerializer.Deserialize<UserSettings>(JsonSerializer.Serialize(expected, JsonDefaults.Options), JsonDefaults.Options);
+
+        Assert.NotNull(actual);
+        Assert.Equal(EngineType.NextGen, actual.PreferredEngine);
+        Assert.Equal("nextgen-discord", actual.NextGenStrategyId);
+        Assert.False(actual.CheckChatGpt);
+        Assert.True(actual.CheckInstagram);
+        Assert.True(actual.CheckTikTok);
+        Assert.True(actual.CheckTelegram);
+        Assert.NotNull(actual.Services);
+        Assert.True(actual.Services.Telegram);
+    }
+
+    [Fact]
+    public void UserSettings_CleanInstallKeepsOnlyLegacyServicesEnabled()
+    {
+        var settings = new UserSettings();
+        Assert.Equal(
+            [ServiceTargetCatalog.YouTube, ServiceTargetCatalog.Discord, ServiceTargetCatalog.Voice],
+            ServiceTargetCatalog.EnabledFromSettings(settings));
+    }
+
+    [Fact]
+    public void ServiceStrategyComposer_PreservesDefaultClassicCommandExactly()
+    {
+        string[] arguments =
+        [
+            "--filter-tcp=80,443", "--hostlist={lists}\\list-general.txt",
+            "--hostlist={lists}\\list-general-user.txt", "--dpi-desync=multisplit"
+        ];
+
+        var composed = ServiceStrategyComposer.Compose(arguments, EngineType.Classic,
+            [ServiceTargetCatalog.YouTube, ServiceTargetCatalog.Discord, ServiceTargetCatalog.Voice]);
+
+        Assert.Equal(arguments, composed);
+    }
+
+    [Fact]
+    public void ServiceStrategyComposer_AddsPerServiceTlsAndQuicExtensions()
+    {
+        string[] arguments =
+        [
+            "--filter-tcp=80,443", "--hostlist={lists}\\list-general.txt",
+            "--hostlist={lists}\\list-general-user.txt", "--lua-desync=multisplit:pos=1,midsld",
+            "--new", "--filter-udp=443", "--hostlist={lists}\\list-general.txt",
+            "--lua-desync=fake:blob=fake_default_quic"
+        ];
+
+        var composed = ServiceStrategyComposer.Compose(arguments, EngineType.NextGen,
+            [ServiceTargetCatalog.ChatGpt, ServiceTargetCatalog.TikTok]);
+
+        Assert.Contains("--hostlist={lists}\\active-service-chatgpt.txt", composed);
+        Assert.Contains("--hostlist={lists}\\active-service-tiktok.txt", composed);
+        Assert.Contains("--hostlist={lists}\\active-hostlist.txt", composed);
+        Assert.True(composed.Count(argument => argument == "--filter-udp=443") >= 2);
+    }
+
     [Theory]
     [InlineData("general", "general", "general")]
     [InlineData("general--alt7", "general (ALT7)", "ALT7")]
@@ -161,6 +322,32 @@ public sealed class StrategyTests
                 ]}
                 """);
             await Assert.ThrowsAsync<InvalidDataException>(() => new StrategyStore(path).LoadAsync());
+        }
+        finally
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+
+    [Fact]
+    public async Task StrategyStore_FallsBackToPreviousValidatedDatabase()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "RaffertyTests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var path = Path.Combine(directory, "strategies.json");
+            await File.WriteAllTextAsync(path, "{broken-json");
+            await File.WriteAllTextAsync(path + ".previous", """
+                {"schemaVersion":1,"source":"rollback","updatedAt":"2026-01-01T00:00:00Z","strategies":[
+                  {"id":"general","name":"general","description":"","targets":[],"protocols":["tcp"],"ports":[443],"arguments":["--filter-tcp=443"]}
+                ]}
+                """);
+
+            var database = await new StrategyStore(path).LoadAsync();
+
+            Assert.Equal("rollback", database.Source);
+            Assert.Equal("general", Assert.Single(database.Strategies).Id);
         }
         finally
         {

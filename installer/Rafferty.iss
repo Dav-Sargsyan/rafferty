@@ -1,5 +1,5 @@
 #define MyAppName "Rafferty"
-#define MyAppVersion "1.4.1"
+#define MyAppVersion "1.5.0"
 #define MyAppPublisher "Rafferty"
 #define MyAppExeName "Rafferty.exe"
 

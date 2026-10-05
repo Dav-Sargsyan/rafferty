@@ -1,0 +1,18 @@
+# Minimal ChatGPT/OpenAI network set based on OpenAI network recommendations
+chatgpt.com
+openai.com
+oaistatic.com
+oaiusercontent.com
+auth.openai.com
+cdn.openaimerge.com
+chat.openai.com
+desktop.chat.openai.com
+android.chat.openai.com
+ios.chat.openai.com
+ws.chatgpt.com
+auth0.openai.com
+setup.openai.com
+setup.workos.com
+cdn.workos.com
+workos.imgix.net
+oaistatsig.com

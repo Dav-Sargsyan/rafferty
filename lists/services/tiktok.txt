@@ -1,0 +1,10 @@
+# TikTok frontend, API, static and media delivery
+tiktok.com
+tiktokapis.com
+tiktokcdn.com
+tiktokv.com
+ttwstatic.com
+byteoversea.com
+ibytedtos.com
+muscdn.com
+musical.ly

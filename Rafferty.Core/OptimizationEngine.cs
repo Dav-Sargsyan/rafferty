@@ -28,10 +28,13 @@ public sealed class OptimizationEngine
         bool deepSearch = false,
         EngineType firstAutoEngine = EngineType.Auto,
         IReadOnlyList<string>? priorityStrategyIds = null,
-        IReadOnlyList<string>? deprioritizedStrategyIds = null)
+        IReadOnlyList<string>? deprioritizedStrategyIds = null,
+        IReadOnlyCollection<string>? enabledTargetIds = null)
     {
         checkVoice &= checkDiscord;
-        if (!checkYouTube && !checkDiscord && !checkVoice)
+        var enabledTargets = enabledTargetIds?.Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+            ?? BuildEnabledTargets(checkYouTube, checkDiscord, checkVoice);
+        if (enabledTargets.Length == 0)
         {
             throw new ArgumentException("Select at least one service to test during optimization.");
         }
@@ -56,22 +59,23 @@ public sealed class OptimizationEngine
             {
                 var snapshot = await _engine.StartAsync(strategy.Id, ReachabilitySnapshot.Unknown, cancellationToken).ConfigureAwait(false);
                 startup.Stop();
-                var results = await _tester.RunQuickHealthCheckAsync(checkYouTube, checkDiscord, checkVoice, cancellationToken).ConfigureAwait(false);
-                var score = StrategyScorer.Calculate(strategy.Id, results, startup.Elapsed, checkYouTube, checkDiscord, checkVoice) with
+                var results = await _tester.RunQuickHealthCheckAsync(enabledTargets, cancellationToken).ConfigureAwait(false);
+                var score = StrategyScorer.Calculate(strategy.Id, results, startup.Elapsed, enabledTargets) with
                 {
                     EngineStarted = snapshot.EngineRunning,
                     DriverActive = snapshot.DriverActive
                 };
                 scores.Add(score);
-                progress?.Report($"{displayName}: YouTube={score.YouTube}, Discord={score.Discord}, Voice={score.Voice}, score={score.Score:F0}");
-                await _logger.InfoAsync($"Strategy test {displayName}: engine=OK driver=OK YouTube={score.YouTube} Discord={score.Discord} Voice={score.Voice} score={score.Score:F1}", cancellationToken).ConfigureAwait(false);
-                if (RequiredServicesMatch(score, ServiceReachability.Working, checkYouTube, checkDiscord, checkVoice))
+                var targetSummary = FormatTargets(score, enabledTargets);
+                progress?.Report($"{displayName}: {targetSummary}; score={score.Score:F0}");
+                await _logger.InfoAsync($"Strategy test {displayName}: engine=OK driver=OK {targetSummary} score={score.Score:F1}", cancellationToken).ConfigureAwait(false);
+                if (TargetsMatch(score, enabledTargets, ServiceReachability.Working))
                 {
                     keepRunning = true;
                     _engine.SetConnectivityVerified(true);
                     await _logger.SuccessAsync($"Fast optimization selected {strategy.Id} after {testedStrategies.Count} candidate(s).", cancellationToken).ConfigureAwait(false);
                     return new(true, snapshot.StrategyId, scores, baseline,
-                        $"Selected {displayName} after {testedStrategies.Count}/{candidates.Count} checks.");
+                        $"Selected {displayName} after {testedStrategies.Count}/{candidates.Count} checks.", FullyWorking: true);
                 }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
@@ -92,15 +96,16 @@ public sealed class OptimizationEngine
         }
 
         var ordered = scores.Where(score => score.EngineStarted && score.DriverActive)
-            .OrderByDescending(score => RequiredServicesMatch(score, ServiceReachability.Working, checkYouTube, checkDiscord, checkVoice))
+            .OrderByDescending(score => TargetsMatch(score, enabledTargets, ServiceReachability.Working))
             .ThenByDescending(score => score.Score)
             .ThenBy(score => score.AverageLatencyMs)
             .ToArray();
         var best = ordered.FirstOrDefault();
-        var reason = deepSearch
-            ? "Расширенный поиск не нашёл полностью рабочую стратегию."
-            : "Быстрый поиск не нашёл полностью рабочую стратегию. Запустите расширенный поиск вручную.";
-        return new(false, best?.StrategyId, scores, baseline, reason);
+        var reason = best is null
+            ? "Ни одна стратегия не смогла запустить движок и WinDivert. Откройте диагностику для подробностей."
+            : $"Полностью рабочая стратегия не найдена. Лучший результат: {StrategyNames.DisplayName(best.StrategyId)} — {FormatTargets(best, enabledTargets)}. "
+                + (deepSearch ? "Можно использовать её вручную." : "Можно использовать её вручную или запустить расширенный поиск.");
+        return new(false, best?.StrategyId, scores, baseline, reason, FullyWorking: false);
     }
 
     public static IReadOnlyList<Strategy> OrderCandidates(
@@ -130,10 +135,21 @@ public sealed class OptimizationEngine
             : classic.Concat(nextGen).Take(8).ToArray();
     }
 
-    private static bool RequiredServicesMatch(StrategyScore score, ServiceReachability expected, bool checkYouTube, bool checkDiscord, bool checkVoice) =>
-        (!checkYouTube || score.YouTube == expected)
-        && (!checkDiscord || score.Discord == expected)
-        && (!checkVoice || score.Voice == expected);
+    private static string[] BuildEnabledTargets(bool checkYouTube, bool checkDiscord, bool checkVoice)
+    {
+        var result = new List<string>();
+        if (checkYouTube) result.Add(ServiceTargetCatalog.YouTube);
+        if (checkDiscord) result.Add(ServiceTargetCatalog.Discord);
+        if (checkVoice) result.Add(ServiceTargetCatalog.Voice);
+        return result.ToArray();
+    }
+
+    private static bool TargetsMatch(StrategyScore score, IEnumerable<string> enabledTargets, ServiceReachability expected) =>
+        enabledTargets.All(id => score.TargetResults?.TryGetValue(id, out var state) == true && state == expected);
+
+    private static string FormatTargets(StrategyScore score, IEnumerable<string> enabledTargets) => string.Join(", ",
+        enabledTargets.Select(id => $"{ServiceTargetCatalog.Get(id).DisplayName}="
+            + (score.TargetResults?.TryGetValue(id, out var state) == true ? state : ServiceReachability.NotTested)));
 
 }
 

@@ -83,10 +83,10 @@ public sealed class StrategyStore
 
     private async Task<StrategyDatabase> LoadMergedAsync(CancellationToken cancellationToken)
     {
-        var bundled = await LoadFromDiskAsync(_path, cancellationToken).ConfigureAwait(false);
+        var bundled = await LoadWithRollbackAsync(_path, cancellationToken).ConfigureAwait(false);
         if (!string.IsNullOrWhiteSpace(_nextGenPath) && File.Exists(_nextGenPath))
         {
-            var nextGen = await LoadFromDiskAsync(_nextGenPath, cancellationToken).ConfigureAwait(false);
+            var nextGen = await LoadWithRollbackAsync(_nextGenPath, cancellationToken).ConfigureAwait(false);
             bundled = bundled with
             {
                 Source = $"{bundled.Source}; {nextGen.Source}",
@@ -110,6 +110,24 @@ public sealed class StrategyStore
         await using var stream = File.OpenRead(path);
         return await JsonSerializer.DeserializeAsync<StrategyDatabase>(stream, JsonDefaults.Options, cancellationToken)
             .ConfigureAwait(false) ?? throw new InvalidDataException("Strategy database is empty.");
+    }
+
+    private static async Task<StrategyDatabase> LoadWithRollbackAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var database = await LoadFromDiskAsync(path, cancellationToken).ConfigureAwait(false);
+            Validate(database);
+            return database;
+        }
+        catch (Exception exception) when (exception is IOException or System.Text.Json.JsonException or InvalidDataException)
+        {
+            var previous = path + ".previous";
+            if (!File.Exists(previous)) throw;
+            var rollback = await LoadFromDiskAsync(previous, cancellationToken).ConfigureAwait(false);
+            Validate(rollback);
+            return rollback;
+        }
     }
 
     private static void Validate(StrategyDatabase database)

@@ -121,6 +121,18 @@ public class EngineManager : IBypassEngine
             var executable = ResolveEngineExecutable();
             await EngineIntegrity.VerifyAsync(_workingDirectory, cancellationToken).ConfigureAwait(false);
             await _logger.InfoAsync(await WindowsNetworkPrerequisites.EnsureTcpTimestampsAsync(cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+            ServiceListManager.Apply(_runtimeOptions.ReferenceCompatible
+                ? []
+                : _runtimeOptions.EnabledServiceIds ?? []);
+            if (!_runtimeOptions.ReferenceCompatible)
+            {
+                foreach (var targetId in _runtimeOptions.EnabledServiceIds ?? [])
+                {
+                    var target = ServiceTargetCatalog.Get(targetId);
+                    var tags = _engineType == EngineType.NextGen ? target.NextGenStrategyTags : target.ClassicStrategyTags;
+                    await _logger.InfoAsync($"Service {target.DisplayName}: target matched; hostlist loaded; strategy extension active: {string.Join(',', tags ?? [])}", cancellationToken).ConfigureAwait(false);
+                }
+            }
             var expandedArguments = BuildArguments(strategy).ToArray();
             ValidateReferencedFiles(expandedArguments, strategy);
             var startInfo = new ProcessStartInfo
@@ -143,6 +155,7 @@ public class EngineManager : IBypassEngine
 
             _stopping = false;
             var startupReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var startupFatal = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
             var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             process.OutputDataReceived += (_, args) =>
             {
@@ -153,6 +166,7 @@ public class EngineManager : IBypassEngine
             {
                 QueueEngineLog("ERROR", args.Data);
                 if (IsStartupReadyMessage(args.Data)) startupReady.TrySetResult();
+                if (IsFatalStartupMessage(args.Data)) startupFatal.TrySetResult(args.Data!);
             };
             process.Exited += HandleProcessExit;
             process.Exited += (_, _) => startupReady.TrySetResult();
@@ -174,7 +188,9 @@ public class EngineManager : IBypassEngine
 
             // Prefer winws' own capture-ready signal. The timeout covers builds that do not
             // print it, after which process and driver state are still verified explicitly.
-            await Task.WhenAny(startupReady.Task, Task.Delay(TimeSpan.FromSeconds(2), cancellationToken)).ConfigureAwait(false);
+            await Task.WhenAny(startupReady.Task, startupFatal.Task, Task.Delay(TimeSpan.FromSeconds(2), cancellationToken)).ConfigureAwait(false);
+            if (startupFatal.Task.IsCompletedSuccessfully)
+                throw new InvalidOperationException($"{_executableName} reported a fatal startup error: {startupFatal.Task.Result}");
             if (process.HasExited)
             {
                 throw new InvalidOperationException($"{_executableName} failed during startup (exit code {process.ExitCode}). Check engine.log.");
@@ -194,7 +210,8 @@ public class EngineManager : IBypassEngine
         catch (Exception exception)
         {
             _lastError = exception.Message;
-            await _logger.ErrorAsync($"Engine start failed: {exception.Message}", cancellationToken).ConfigureAwait(false);
+            await _logger.ErrorAsync($"Engine start failed: {exception.Message}", CancellationToken.None).ConfigureAwait(false);
+            await StopCoreAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
         finally
@@ -285,7 +302,21 @@ public class EngineManager : IBypassEngine
         {
             arguments.AddRange((strategy.LuaFiles ?? []).Select(file => $"--lua-init=@{Path.Combine(_workingDirectory, file)}"));
         }
-        arguments.AddRange(StrategyRuntimeTransformer.Transform(strategy.Arguments, _runtimeOptions));
+        var runtimeArguments = _engineType == EngineType.Classic && _runtimeOptions.ReferenceCompatible
+            ? strategy.Arguments
+            : StrategyRuntimeTransformer.Transform(strategy.Arguments, _runtimeOptions);
+        var composed = _runtimeOptions.ReferenceCompatible
+            ? runtimeArguments
+            : ServiceStrategyComposer.Compose(runtimeArguments, _engineType, _runtimeOptions.EnabledServiceIds);
+        if (!_runtimeOptions.ReferenceCompatible)
+        {
+            foreach (var targetId in (_runtimeOptions.EnabledServiceIds ?? []).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var target = ServiceTargetCatalog.Get(targetId);
+                QueueEngineLog("INFO", $"Service target matched: {target.DisplayName}; filter applied; {(_engineType == EngineType.NextGen ? "NextGen" : "Classic")} service extension active.");
+            }
+        }
+        arguments.AddRange(composed);
         return arguments.Select(ExpandArgument).ToArray();
     }
 
@@ -324,6 +355,14 @@ public class EngineManager : IBypassEngine
     private static bool IsStartupReadyMessage(string? message) => message is not null &&
         (message.Contains("capture is started", StringComparison.OrdinalIgnoreCase)
             || message.Contains("windivert initialized", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsFatalStartupMessage(string? message) => message is not null
+        && (message.Contains("fatal", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("cannot load", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("failed to load", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("failed to open", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("failed to initialize", StringComparison.OrdinalIgnoreCase)
+            || message.Contains("failed to start", StringComparison.OrdinalIgnoreCase));
 
     private void HandleProcessExit(object? sender, EventArgs eventArgs)
     {

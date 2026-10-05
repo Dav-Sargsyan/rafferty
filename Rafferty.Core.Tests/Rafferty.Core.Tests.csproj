@@ -15,5 +15,13 @@
     <ProjectReference Include="..\Rafferty.Core\Rafferty.Core.csproj" />
     <ProjectReference Include="..\Rafferty.Shared\Rafferty.Shared.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\strategies\strategies.json" Link="TestData\strategies.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\strategies\golden-classic.json" Link="TestData\golden-classic.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\strategies\nextgen-strategies.json" Link="TestData\nextgen-strategies.json" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\engine\**\*" Link="TestData\engine\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\engine-nextgen\**\*" Link="TestData\engine-nextgen\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\lists\**\*" Link="TestData\lists\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
 

@@ -27,6 +27,7 @@
     <EmbeddedResource Include="..\lists\**\*" LogicalName="Rafferty.Runtime/lists/%(RecursiveDir)%(Filename)%(Extension)" />
     <EmbeddedResource Include="..\strategies\strategies.json" LogicalName="Rafferty.Runtime/strategies.json" />
     <EmbeddedResource Include="..\strategies\nextgen-strategies.json" LogicalName="Rafferty.Runtime/nextgen-strategies.json" />
+    <EmbeddedResource Include="..\strategies\golden-classic.json" LogicalName="Rafferty.Runtime/golden-classic.json" />
     <EmbeddedResource Include="..\licenses\**\*" LogicalName="Rafferty.Runtime/licenses/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

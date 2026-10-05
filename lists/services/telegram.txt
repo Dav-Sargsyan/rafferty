@@ -1,0 +1,10 @@
+# Telegram Desktop, Web, API and public media entry points
+telegram.org
+telegram.me
+t.me
+telegra.ph
+tdesktop.com
+telesco.pe
+web.telegram.org
+api.telegram.org
+desktop.telegram.org
