@@ -60,7 +60,7 @@ public sealed class StrategyTests
     }
 
     [Fact]
-    public void AutoOptimization_UsesBoundedCandidatesFromBothEngines()
+    public void AutoOptimization_UsesOnlyClassicUntilNextGenIsValidated()
     {
         var strategies = Enumerable.Range(0, 8)
             .Select(index => new Strategy($"classic-{index}", "Classic", "", [], ["tcp"], [443], ["--filter-tcp=443"]))
@@ -69,14 +69,14 @@ public sealed class StrategyTests
 
         var candidates = OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, deepSearch: false);
 
-        Assert.Equal(6, candidates.Count);
+        Assert.Equal(3, candidates.Count);
         Assert.Equal(3, candidates.Count(strategy => strategy.EngineType == EngineType.Classic));
-        Assert.Equal(3, candidates.Count(strategy => strategy.EngineType == EngineType.NextGen));
-        Assert.Equal(EngineType.NextGen, OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen)[0].EngineType);
-        Assert.Equal("next-5", OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen, ["next-5"])[0].Id);
-        Assert.NotEqual("next-5", OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen, ["next-5"], ["next-5"])[0].Id);
+        Assert.DoesNotContain(candidates, strategy => strategy.EngineType == EngineType.NextGen);
+        Assert.Equal(EngineType.Classic, OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen)[0].EngineType);
+        Assert.Equal("classic-5", OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen, ["classic-5"])[0].Id);
+        Assert.NotEqual("classic-5", OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, false, EngineType.NextGen, ["classic-5"], ["classic-5"])[0].Id);
         Assert.Equal(6, OptimizationEngine.OrderCandidates(strategies, EngineType.NextGen, deepSearch: false).Count);
-        Assert.Equal(16, OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, deepSearch: true).Count);
+        Assert.Equal(8, OptimizationEngine.OrderCandidates(strategies, EngineType.Auto, deepSearch: true).Count);
     }
 
     [Fact]
@@ -305,6 +305,38 @@ public sealed class StrategyTests
         ];
 
         Assert.Equal(ServiceReachability.Working, ConnectivityTester.Summarize(results).YouTube);
+    }
+
+    [Theory]
+    [InlineData(200, DiagnosticState.Success, ConnectivityState.Working, true)]
+    [InlineData(403, DiagnosticState.Warning, ConnectivityState.ServerRejected, false)]
+    [InlineData(404, DiagnosticState.Warning, ConnectivityState.Inconclusive, false)]
+    [InlineData(503, DiagnosticState.Error, ConnectivityState.Failed, false)]
+    public void ConnectivityClassification_DoesNotTreatAnyHttpResponseAsWorking(
+        int statusCode,
+        DiagnosticState expectedState,
+        ConnectivityState expectedConnectivity,
+        bool expectedValidated)
+    {
+        var actual = ConnectivityTester.ClassifyHttpStatus(statusCode);
+
+        Assert.Equal(expectedState, actual.State);
+        Assert.Equal(expectedConnectivity, actual.Connectivity);
+        Assert.Equal(expectedValidated, actual.ServiceValidated);
+    }
+
+    [Fact]
+    public void ServiceSummary_TreatsTransportOnlyAsPartialNotWorking()
+    {
+        DiagnosticResult[] results =
+        [
+            new("telegram-desktop", "Telegram Desktop", DiagnosticState.Success, "TCP connected",
+                Connectivity: ConnectivityState.TransportOnly, TransportReachable: true)
+        ];
+
+        var summary = ServiceTargetCatalog.SummarizeTargets(results, [ServiceTargetCatalog.Telegram]);
+
+        Assert.Equal(ServiceReachability.Degraded, summary[ServiceTargetCatalog.Telegram]);
     }
 
     [Fact]

@@ -125,14 +125,14 @@ public sealed class OptimizationEngine
         filtered = filtered
             .OrderBy(strategy => failed.Contains(strategy.Id))
             .ThenBy(strategy => priority.TryGetValue(strategy.Id, out var index) ? index : int.MaxValue);
-        if (deepSearch) return filtered.ToArray();
+        if (preferredEngine == EngineType.Auto)
+        {
+            var classicOnly = filtered.Where(strategy => strategy.EngineType == EngineType.Classic);
+            return deepSearch ? classicOnly.ToArray() : classicOnly.Take(3).ToArray();
+        }
 
-        if (preferredEngine != EngineType.Auto) return filtered.Take(6).ToArray();
-        var classic = filtered.Where(strategy => strategy.EngineType == EngineType.Classic).Take(3);
-        var nextGen = filtered.Where(strategy => strategy.EngineType == EngineType.NextGen).Take(3);
-        return firstAutoEngine == EngineType.NextGen
-            ? nextGen.Concat(classic).Take(8).ToArray()
-            : classic.Concat(nextGen).Take(8).ToArray();
+        if (deepSearch) return filtered.ToArray();
+        return filtered.Take(6).ToArray();
     }
 
     private static string[] BuildEnabledTargets(bool checkYouTube, bool checkDiscord, bool checkVoice)

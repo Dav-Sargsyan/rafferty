@@ -6,7 +6,11 @@ public sealed record ServiceTestEndpoint(
     string Id,
     string DisplayName,
     string Url,
-    string Feature);
+    string Feature,
+    IReadOnlyList<int>? ExpectedStatusCodes = null,
+    string? ExpectedContentType = null,
+    string? ExpectedRedirectHost = null,
+    string? OptionalBodyMarker = null);
 
 public sealed record ServiceTarget(
     string Id,
@@ -131,8 +135,13 @@ public static class ServiceTargetCatalog
         var ids = endpointIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var selected = results.Where(result => ids.Contains(result.Id)).ToArray();
         if (selected.Length == 0) return ServiceReachability.NotTested;
-        if (selected.All(result => result.State == DiagnosticState.Success)) return ServiceReachability.Working;
-        if (selected.Any(result => result.State == DiagnosticState.Success)) return ServiceReachability.Degraded;
+        // Older imported diagnostics have no explicit validation metadata. Their
+        // Success state remains compatible, while live checks must opt in.
+        var validated = selected.Where(result => result.ServiceValidated ||
+            (result.Connectivity == ConnectivityState.NotTested && result.State == DiagnosticState.Success)).ToArray();
+        if (validated.Length == selected.Length) return ServiceReachability.Working;
+        if (validated.Length > 0 || selected.Any(result => result.TransportReachable || result.Connectivity == ConnectivityState.TransportOnly))
+            return ServiceReachability.Degraded;
         return ServiceReachability.Unavailable;
     }
 }

@@ -86,6 +86,35 @@ public enum DiagnosticState
     NotTested
 }
 
+// A response from a remote host only proves that transport reached that host.
+// Keep that fact separate from a successful, service-specific validation.
+[JsonConverter(typeof(JsonStringEnumConverter<ConnectivityState>))]
+public enum ConnectivityState
+{
+    NotTested,
+    TransportOnly,
+    Partial,
+    Working,
+    Blocked,
+    ServerRejected,
+    Failed,
+    Inconclusive
+}
+
+[JsonConverter(typeof(JsonStringEnumConverter<BlockClassification>))]
+public enum BlockClassification
+{
+    Unknown,
+    DnsProblem,
+    TcpBlocked,
+    TlsBlocked,
+    QuicBlocked,
+    LikelyDpi,
+    ServerRejected,
+    MediaBlocked,
+    ProtocolBlocked
+}
+
 [JsonConverter(typeof(JsonStringEnumConverter<IpSetMode>))]
 public enum IpSetMode
 {
@@ -99,7 +128,14 @@ public sealed record DiagnosticResult(
     string Name,
     DiagnosticState State,
     string Detail,
-    double? LatencyMs = null);
+    double? LatencyMs = null,
+    ConnectivityState Connectivity = ConnectivityState.NotTested,
+    BlockClassification Classification = BlockClassification.Unknown,
+    int? HttpStatus = null,
+    string? ContentType = null,
+    string? FinalUri = null,
+    bool TransportReachable = false,
+    bool ServiceValidated = false);
 
 public sealed record StrategyScore(
     string StrategyId,

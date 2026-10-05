@@ -4,7 +4,8 @@ public static class AppPaths
 {
     public const string PipeName = "Rafferty";
     public const string ServiceName = "Rafferty.Service";
-    public const string RuntimeLayoutVersion = "1.4.1-dual-engine";
+    public const string RuntimePackageVersion = "1.4.1-dual-engine";
+    public const string RuntimeLayoutVersion = RuntimePackageVersion;
     public const string ClassicEngineVersion = "zapret1-ref-249a704";
     public const string NextGenEngineVersion = "zapret2-v1.0.5.2";
     public const string StrategyPackVersion = "dual-2026.10.01";

@@ -13,6 +13,7 @@ public sealed class BypassEngineManager : IBypassEngine
     private readonly StrategyStore _strategies;
     private readonly ClassicBypassEngine _classic;
     private readonly NextGenBypassEngine _nextGen;
+    private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
     private IBypassEngine? _active;
 
     public BypassEngineManager(StrategyStore strategies, RotatingFileLogger logger)
@@ -49,26 +50,50 @@ public sealed class BypassEngineManager : IBypassEngine
 
     public async Task<EngineSnapshot> StartAsync(string strategyId, ReachabilitySnapshot reachability, CancellationToken cancellationToken = default)
     {
-        var target = await ResolveAsync(strategyId, cancellationToken).ConfigureAwait(false);
-        var other = ReferenceEquals(target, _classic) ? (IBypassEngine)_nextGen : _classic;
-        await other.StopAsync(reachability, cancellationToken).ConfigureAwait(false);
-        if (_active is not null && !ReferenceEquals(_active, target))
-            await _active.StopAsync(reachability, cancellationToken).ConfigureAwait(false);
-        _active = target;
-        return await target.StartAsync(strategyId, reachability, cancellationToken).ConfigureAwait(false);
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var target = await ResolveAsync(strategyId, cancellationToken).ConfigureAwait(false);
+            var other = ReferenceEquals(target, _classic) ? (IBypassEngine)_nextGen : _classic;
+            await other.StopAsync(reachability, cancellationToken).ConfigureAwait(false);
+            if (_active is not null && !ReferenceEquals(_active, target))
+                await _active.StopAsync(reachability, cancellationToken).ConfigureAwait(false);
+            _active = target;
+            return await target.StartAsync(strategyId, reachability, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+        }
     }
 
     public async Task<EngineSnapshot> StopAsync(ReachabilitySnapshot reachability, CancellationToken cancellationToken = default)
     {
-        await _classic.StopAsync(reachability, cancellationToken).ConfigureAwait(false);
-        await _nextGen.StopAsync(reachability, cancellationToken).ConfigureAwait(false);
-        return Snapshot(reachability);
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _classic.StopAsync(reachability, cancellationToken).ConfigureAwait(false);
+            await _nextGen.StopAsync(reachability, cancellationToken).ConfigureAwait(false);
+            return Snapshot(reachability);
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+        }
     }
 
     public async Task<EngineSnapshot> RestartAsync(ReachabilitySnapshot reachability, CancellationToken cancellationToken = default)
     {
-        if (_active is null) throw new InvalidOperationException("No strategy is selected.");
-        return await _active.RestartAsync(reachability, cancellationToken).ConfigureAwait(false);
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (_active is null) throw new InvalidOperationException("No strategy is selected.");
+            return await _active.RestartAsync(reachability, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _lifecycleGate.Release();
+        }
     }
 
     public bool CanAutoRestart() => _active?.CanAutoRestart() ?? true;
@@ -90,5 +115,6 @@ public sealed class BypassEngineManager : IBypassEngine
     {
         await _classic.DisposeAsync().ConfigureAwait(false);
         await _nextGen.DisposeAsync().ConfigureAwait(false);
+        _lifecycleGate.Dispose();
     }
 }

@@ -119,7 +119,7 @@ public sealed class ConnectivityTester : IDisposable
     }
 
     private async Task<DiagnosticResult> TestInternetAsync(CancellationToken token) =>
-        await TestHttpAsync("https://www.gstatic.com/generate_204", "internet", "Internet", token).ConfigureAwait(false);
+        await TestHttpAsync("https://www.gstatic.com/generate_204", "internet", "Internet", token, [204]).ConfigureAwait(false);
 
     private static async Task<DiagnosticResult> TestDnsAsync(string host, CancellationToken token)
     {
@@ -150,27 +150,63 @@ public sealed class ConnectivityTester : IDisposable
         {
             using var client = new TcpClient();
             await client.ConnectAsync(host, port, token).AsTask().WaitAsync(TimeSpan.FromSeconds(5), token).ConfigureAwait(false);
-            return new(id, name, DiagnosticState.Success, $"Connected to {host}:{port}.", timer.Elapsed.TotalMilliseconds);
+            return new(id, name, DiagnosticState.Success, $"Connected to {host}:{port}.", timer.Elapsed.TotalMilliseconds,
+                ConnectivityState.TransportOnly, BlockClassification.Unknown, TransportReachable: true);
         }
         catch (Exception exception) when (exception is SocketException or TimeoutException or OperationCanceledException)
         {
-            return new(id, name, DiagnosticState.Error, exception.Message, timer.Elapsed.TotalMilliseconds);
+            return new(id, name, DiagnosticState.Error, DescribeException(exception), timer.Elapsed.TotalMilliseconds,
+                ConnectivityState.Failed, BlockClassification.TcpBlocked);
         }
     }
 
-    private async Task<DiagnosticResult> TestHttpAsync(string url, string id, string name, CancellationToken token)
+    private async Task<DiagnosticResult> TestHttpAsync(
+        string url,
+        string id,
+        string name,
+        CancellationToken token,
+        IReadOnlyCollection<int>? expectedStatusCodes = null,
+        string? expectedContentType = null,
+        string? expectedRedirectHost = null,
+        string? optionalBodyMarker = null)
     {
         var timer = Stopwatch.StartNew();
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
-            var success = (int)response.StatusCode is >= 200 and < 500;
-            return new(id, name, success ? DiagnosticState.Success : DiagnosticState.Error, $"HTTP {(int)response.StatusCode}.", timer.Elapsed.TotalMilliseconds);
+            var contentType = response.Content.Headers.ContentType?.MediaType;
+            var finalUri = response.RequestMessage?.RequestUri?.ToString();
+            var evaluation = ClassifyHttpStatus((int)response.StatusCode, expectedStatusCodes);
+            var contentMatches = string.IsNullOrWhiteSpace(expectedContentType)
+                || string.Equals(contentType, expectedContentType, StringComparison.OrdinalIgnoreCase);
+            var redirectMatches = string.IsNullOrWhiteSpace(expectedRedirectHost)
+                || string.Equals(response.RequestMessage?.RequestUri?.Host, expectedRedirectHost, StringComparison.OrdinalIgnoreCase);
+            var bodyMatches = true;
+            if (evaluation.ServiceValidated && !string.IsNullOrWhiteSpace(optionalBodyMarker))
+            {
+                var body = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+                bodyMatches = body.Contains(optionalBodyMarker, StringComparison.OrdinalIgnoreCase);
+            }
+            var validated = evaluation.ServiceValidated && contentMatches && redirectMatches && bodyMatches;
+            var detail = $"HTTP {(int)response.StatusCode}.";
+            if (!evaluation.ServiceValidated)
+                detail += evaluation.Connectivity == ConnectivityState.ServerRejected
+                    ? " Server is reachable, but rejected this request."
+                    : " Server is reachable, but this response does not validate the service."
+                    ;
+            else if (!validated)
+                detail += " Response did not match the service validation rule.";
+            return new(id, name, validated ? DiagnosticState.Success : evaluation.State, detail, timer.Elapsed.TotalMilliseconds,
+                validated ? ConnectivityState.Working : evaluation.Connectivity,
+                validated ? BlockClassification.Unknown : evaluation.Classification,
+                (int)response.StatusCode, contentType, finalUri, TransportReachable: true, ServiceValidated: validated);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
         {
-            return new(id, name, DiagnosticState.Error, exception.Message, timer.Elapsed.TotalMilliseconds);
+            var classification = IsTlsFailure(exception) ? BlockClassification.TlsBlocked : BlockClassification.Unknown;
+            return new(id, name, DiagnosticState.Error, DescribeException(exception), timer.Elapsed.TotalMilliseconds,
+                ConnectivityState.Failed, classification);
         }
     }
 
@@ -179,7 +215,8 @@ public sealed class ConnectivityTester : IDisposable
         var uri = new Uri(endpoint.Url);
         return string.Equals(uri.Scheme, "tcp", StringComparison.OrdinalIgnoreCase)
             ? TestTcpAsync(uri.Host, uri.Port, endpoint.Id, endpoint.DisplayName, token)
-            : TestHttpAsync(endpoint.Url, endpoint.Id, endpoint.DisplayName, token);
+            : TestHttpAsync(endpoint.Url, endpoint.Id, endpoint.DisplayName, token,
+                endpoint.ExpectedStatusCodes, endpoint.ExpectedContentType, endpoint.ExpectedRedirectHost, endpoint.OptionalBodyMarker);
     }
 
     private static async Task<DiagnosticResult> TestStunAsync(CancellationToken token)
@@ -198,11 +235,16 @@ public sealed class ConnectivityTester : IDisposable
             await udp.SendAsync(request, endpoint, token).ConfigureAwait(false);
             var result = await udp.ReceiveAsync(token).AsTask().WaitAsync(TimeSpan.FromSeconds(4), token).ConfigureAwait(false);
             var valid = result.Buffer.Length >= 20 && result.Buffer[0] == 0x01 && result.Buffer[1] == 0x01 && result.Buffer.AsSpan(8, 12).SequenceEqual(transaction);
-            return new("discord-stun", "Discord Voice / STUN", valid ? DiagnosticState.Success : DiagnosticState.Error, valid ? "UDP STUN response received." : "Invalid STUN response.", timer.Elapsed.TotalMilliseconds);
+            return new("discord-stun", "Discord Voice / STUN", valid ? DiagnosticState.Success : DiagnosticState.Error,
+                valid ? "UDP STUN response received." : "Invalid STUN response.", timer.Elapsed.TotalMilliseconds,
+                valid ? ConnectivityState.Working : ConnectivityState.Failed,
+                valid ? BlockClassification.Unknown : BlockClassification.ProtocolBlocked,
+                TransportReachable: valid, ServiceValidated: valid);
         }
         catch (Exception exception) when (exception is SocketException or TimeoutException or OperationCanceledException)
         {
-            return new("discord-stun", "Discord Voice / STUN", DiagnosticState.Error, exception.Message, timer.Elapsed.TotalMilliseconds);
+            return new("discord-stun", "Discord Voice / STUN", DiagnosticState.Error, DescribeException(exception), timer.Elapsed.TotalMilliseconds,
+                ConnectivityState.Failed, BlockClassification.ProtocolBlocked);
         }
     }
 
@@ -218,11 +260,15 @@ public sealed class ConnectivityTester : IDisposable
             var result = await socket.ReceiveAsync(buffer, token).WaitAsync(TimeSpan.FromSeconds(7), token).ConfigureAwait(false);
             var valid = result.Count > 0 && result.MessageType == WebSocketMessageType.Text;
             return new("discord-gateway", "Discord Gateway WebSocket", valid ? DiagnosticState.Success : DiagnosticState.Error,
-                valid ? $"Gateway HELLO received ({result.Count} bytes)." : "Gateway returned no HELLO payload.", timer.Elapsed.TotalMilliseconds);
+                valid ? $"Gateway HELLO received ({result.Count} bytes)." : "Gateway returned no HELLO payload.", timer.Elapsed.TotalMilliseconds,
+                valid ? ConnectivityState.Working : ConnectivityState.Failed,
+                valid ? BlockClassification.Unknown : BlockClassification.ProtocolBlocked,
+                TransportReachable: valid, ServiceValidated: valid);
         }
         catch (Exception exception) when (exception is WebSocketException or TimeoutException or OperationCanceledException)
         {
-            return new("discord-gateway", "Discord Gateway WebSocket", DiagnosticState.Error, exception.Message, timer.Elapsed.TotalMilliseconds);
+            return new("discord-gateway", "Discord Gateway WebSocket", DiagnosticState.Error, DescribeException(exception), timer.Elapsed.TotalMilliseconds,
+                ConnectivityState.Failed, BlockClassification.ProtocolBlocked);
         }
     }
 
@@ -237,13 +283,46 @@ public sealed class ConnectivityTester : IDisposable
                 VersionPolicy = HttpVersionPolicy.RequestVersionExact
             };
             using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(false);
-            return new("youtube-quic", "YouTube QUIC / HTTP3", DiagnosticState.Success,
-                $"HTTP/{response.Version} {(int)response.StatusCode}.", timer.Elapsed.TotalMilliseconds);
+            var evaluation = ClassifyHttpStatus((int)response.StatusCode, [204]);
+            return new("youtube-quic", "YouTube QUIC / HTTP3", evaluation.State,
+                $"HTTP/{response.Version} {(int)response.StatusCode}.", timer.Elapsed.TotalMilliseconds,
+                evaluation.Connectivity, evaluation.Classification, (int)response.StatusCode,
+                response.Content.Headers.ContentType?.MediaType, response.RequestMessage?.RequestUri?.ToString(),
+                TransportReachable: true, ServiceValidated: evaluation.ServiceValidated);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
         {
-            return new("youtube-quic", "YouTube QUIC / HTTP3", DiagnosticState.Warning, exception.Message, timer.Elapsed.TotalMilliseconds);
+            return new("youtube-quic", "YouTube QUIC / HTTP3", DiagnosticState.Warning, DescribeException(exception), timer.Elapsed.TotalMilliseconds,
+                ConnectivityState.Failed, BlockClassification.QuicBlocked);
         }
+    }
+
+    public static (DiagnosticState State, ConnectivityState Connectivity, BlockClassification Classification, bool ServiceValidated)
+        ClassifyHttpStatus(int statusCode, IReadOnlyCollection<int>? expectedStatusCodes = null)
+    {
+        var expected = expectedStatusCodes is { Count: > 0 }
+            ? expectedStatusCodes.Contains(statusCode)
+            : statusCode is >= 200 and < 300;
+        if (expected) return (DiagnosticState.Success, ConnectivityState.Working, BlockClassification.Unknown, true);
+        if (statusCode is 401 or 403)
+            return (DiagnosticState.Warning, ConnectivityState.ServerRejected, BlockClassification.ServerRejected, false);
+        if (statusCode == 404)
+            return (DiagnosticState.Warning, ConnectivityState.Inconclusive, BlockClassification.Unknown, false);
+        if (statusCode is >= 400 and < 500)
+            return (DiagnosticState.Warning, ConnectivityState.ServerRejected, BlockClassification.ServerRejected, false);
+        return (DiagnosticState.Error, ConnectivityState.Failed, BlockClassification.Unknown, false);
+    }
+
+    private static bool IsTlsFailure(Exception exception) => DescribeException(exception).Contains("SSL", StringComparison.OrdinalIgnoreCase)
+        || DescribeException(exception).Contains("TLS", StringComparison.OrdinalIgnoreCase)
+        || DescribeException(exception).Contains("authentication", StringComparison.OrdinalIgnoreCase);
+
+    private static string DescribeException(Exception exception)
+    {
+        var parts = new List<string>();
+        for (var current = exception; current is not null; current = current.InnerException)
+            parts.Add($"{current.GetType().Name}: {current.Message}");
+        return string.Join(" --> ", parts);
     }
 
     public void Dispose() => _http.Dispose();

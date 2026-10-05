@@ -19,6 +19,9 @@ internal sealed class RaffertyController : IAsyncDisposable
     private OptimizationResult? _lastOptimization;
     private int _recoveryStage;
     private int _recovering;
+    private int _optimizerRunning;
+    private readonly string _sessionId = Guid.NewGuid().ToString("N");
+    private readonly DateTimeOffset _sessionStartedAt = DateTimeOffset.UtcNow;
 
     public EngineSnapshot Status => Engine.Snapshot(_reachability);
     public string RuntimeDirectory => AppPaths.RuntimeRoot;
@@ -130,11 +133,21 @@ internal sealed class RaffertyController : IAsyncDisposable
         var recentSuccess = history.Where(item => item.Success).OrderByDescending(item => item.LastTested).Select(item => item.StrategyId);
         var priorityIds = (state?.BackupStrategyIds ?? []).Concat(recentSuccess).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         var recentFailures = history.Where(item => !item.Success && item.LastTested > DateTimeOffset.Now.AddDays(-7)).Select(item => item.StrategyId).ToArray();
-        var result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine,
-            firstAutoEngine: savedEngine,
-            priorityStrategyIds: priorityIds,
-            deprioritizedStrategyIds: recentFailures,
-            enabledTargetIds: enabledTargets).ConfigureAwait(false);
+        if (Interlocked.Exchange(ref _optimizerRunning, 1) != 0)
+            throw new InvalidOperationException("Strategy optimization is already running.");
+        OptimizationResult result;
+        try
+        {
+            result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine,
+                firstAutoEngine: savedEngine,
+                priorityStrategyIds: priorityIds,
+                deprioritizedStrategyIds: recentFailures,
+                enabledTargetIds: enabledTargets).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _optimizerRunning, 0);
+        }
         _lastOptimization = result;
         if (!result.Success || string.IsNullOrWhiteSpace(result.SelectedStrategyId))
         {
@@ -270,8 +283,18 @@ internal sealed class RaffertyController : IAsyncDisposable
         await _stateStore.SaveAsync((previous ?? new RuntimeState(null, [], null)) with { ActiveStrategyId = null, BackupStrategyIds = [] }, token).ConfigureAwait(false);
         if (deepSearch)
         {
-            var result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine,
-                deepSearch: true, enabledTargetIds: enabledTargets).ConfigureAwait(false);
+            if (Interlocked.Exchange(ref _optimizerRunning, 1) != 0)
+                throw new InvalidOperationException("Strategy optimization is already running.");
+            OptimizationResult result;
+            try
+            {
+                result = await Optimizer.OptimizeAsync(progress, token, checkYouTube, checkDiscord, checkVoice, preferredEngine,
+                    deepSearch: true, enabledTargetIds: enabledTargets).ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _optimizerRunning, 0);
+            }
             _lastOptimization = result;
             if (!result.Success || string.IsNullOrWhiteSpace(result.SelectedStrategyId)) throw new InvalidOperationException(result.Message);
             var strategy = await _strategies!.GetAsync(result.SelectedStrategyId, token).ConfigureAwait(false);
@@ -337,16 +360,34 @@ internal sealed class RaffertyController : IAsyncDisposable
         var selectedStrategy = snapshot.StrategyId ?? persistedState?.ActiveStrategyId;
         var selectedDefinition = selectedStrategy is null ? null : await _strategies!.GetAsync(selectedStrategy, token).ConfigureAwait(false);
         var activeExecutable = snapshot.EngineType == EngineType.NextGen ? AppPaths.NextGenEngineExecutable : AppPaths.ClassicEngineExecutable;
-        var version = FileVersionInfo.GetVersionInfo(activeExecutable).FileVersion ?? "unknown";
+        var bundledVersion = snapshot.EngineType == EngineType.NextGen ? AppPaths.NextGenEngineVersion : AppPaths.ClassicEngineVersion;
+        var version = File.Exists(activeExecutable)
+            ? FileVersionInfo.GetVersionInfo(activeExecutable).FileVersion
+            : null;
+        if (string.IsNullOrWhiteSpace(version) || string.Equals(version, "0.0.0.0", StringComparison.Ordinal))
+            version = bundledVersion;
+        var engineHash = File.Exists(activeExecutable)
+            ? await HashFileAsync(activeExecutable, token).ConfigureAwait(false)
+            : null;
         var lists = new List<object>();
-        foreach (var file in Directory.GetFiles(AppPaths.ListsDirectory).OrderBy(Path.GetFileName))
+        foreach (var file in Directory.EnumerateFiles(AppPaths.ListsDirectory, "*", SearchOption.AllDirectories).OrderBy(Path.GetFileName))
         {
-            await using var stream = File.OpenRead(file);
-            lists.Add(new { name = Path.GetFileName(file), size = stream.Length, sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, token).ConfigureAwait(false)) });
+            var content = await File.ReadAllLinesAsync(file, token).ConfigureAwait(false);
+            lists.Add(new
+            {
+                name = Path.GetRelativePath(AppPaths.ListsDirectory, file),
+                size = new FileInfo(file).Length,
+                sha256 = await HashFileAsync(file, token).ConfigureAwait(false),
+                domainCount = content.Count(line => !string.IsNullOrWhiteSpace(line) && !line.TrimStart().StartsWith('#'))
+            });
         }
         var logPath = Path.Combine(AppPaths.LogsDirectory, "rafferty.log");
         var errors = File.Exists(logPath)
             ? File.ReadLines(logPath).Where(line => line.Contains("[ERROR]", StringComparison.OrdinalIgnoreCase)).TakeLast(100)
+                .Select(Sanitize).ToArray()
+            : [];
+        var currentErrors = File.Exists(logPath)
+            ? File.ReadLines(logPath).Where(line => line.Contains("[ERROR]", StringComparison.OrdinalIgnoreCase) && IsCurrentSessionLogLine(line)).TakeLast(100)
                 .Select(Sanitize).ToArray()
             : [];
         IReadOnlyList<object> requiredFiles = selectedDefinition is null ? [] : VerifyStrategyFiles(selectedDefinition);
@@ -354,10 +395,14 @@ internal sealed class RaffertyController : IAsyncDisposable
         {
             product = "Rafferty",
             version = AppVersion.Display,
+            sessionId = _sessionId,
+            sessionStartedAt = _sessionStartedAt,
             generatedAtUtc = DateTimeOffset.UtcNow,
             windows = Environment.OSVersion.VersionString,
             engineVersion = version,
+            engineBinarySha256 = engineHash,
             engineType = snapshot.EngineType,
+            runtimePackageVersion = AppPaths.RuntimePackageVersion,
             classicRuntimeVersion = AppPaths.ClassicEngineVersion,
             nextGenRuntimeVersion = AppPaths.NextGenEngineVersion,
             strategyPackVersion = AppPaths.StrategyPackVersion,
@@ -366,6 +411,9 @@ internal sealed class RaffertyController : IAsyncDisposable
             driverActive = snapshot.DriverActive,
             strategyApplied = snapshot.StrategyApplied,
             connectivityVerified = snapshot.ConnectivityVerified,
+            engineRunning = snapshot.EngineRunning,
+            optimizerRunning = Volatile.Read(ref _optimizerRunning) != 0,
+            recoveryRunning = Volatile.Read(ref _recovering) != 0,
             selectedStrategy,
             lastKnownGoodClassicStrategy = persistedState?.LastKnownGoodClassicStrategy,
             lastKnownGoodNextGenStrategy = persistedState?.LastKnownGoodNextGenStrategy,
@@ -376,13 +424,21 @@ internal sealed class RaffertyController : IAsyncDisposable
             requiredFileVerification = requiredFiles,
             connectivity = diagnostics,
             listFiles = lists,
-            engineErrors = errors
+            currentSessionErrors = currentErrors,
+            historicalEngineErrors = errors
         };
-        var directory = outputPath is null ? Path.Combine(AppPaths.UserDataRoot, "diagnostics") : Path.GetDirectoryName(Path.GetFullPath(outputPath))!;
-        Directory.CreateDirectory(directory);
+        var directory = outputPath is null ? AppContext.BaseDirectory : Path.GetDirectoryName(Path.GetFullPath(outputPath))!;
         var path = outputPath is null ? Path.Combine(directory, $"Rafferty-diagnostics-{DateTime.Now:yyyyMMdd-HHmmss}.json") : Path.GetFullPath(outputPath);
-        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(report, JsonDefaults.Options), token).ConfigureAwait(false);
-        return path;
+        try
+        {
+            Directory.CreateDirectory(directory);
+            await File.WriteAllTextAsync(path, JsonSerializer.Serialize(report, JsonDefaults.Options), token).ConfigureAwait(false);
+            return path;
+        }
+        catch (Exception exception) when (outputPath is null && exception is IOException or UnauthorizedAccessException)
+        {
+            throw new IOException($"Не удалось сохранить диагностику рядом с Rafferty.exe: {exception.Message}", exception);
+        }
     }
 
     private static IReadOnlyList<object> VerifyStrategyFiles(Strategy strategy)
@@ -443,12 +499,30 @@ internal sealed class RaffertyController : IAsyncDisposable
         .Replace(AppPaths.UserDataRoot, "{localAppData}\\Rafferty", StringComparison.OrdinalIgnoreCase)
         .Replace(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "{userProfile}", StringComparison.OrdinalIgnoreCase);
 
+    private static async Task<string> HashFileAsync(string path, CancellationToken token)
+    {
+        await using var stream = File.OpenRead(path);
+        return Convert.ToHexString(await SHA256.HashDataAsync(stream, token).ConfigureAwait(false));
+    }
+
+    private bool IsCurrentSessionLogLine(string line)
+    {
+        var separator = line.IndexOf(' ');
+        return separator > 0
+            && DateTimeOffset.TryParse(line[..separator], out var timestamp)
+            && timestamp >= _sessionStartedAt;
+    }
+
     private async Task RecoverAfterCrashAsync()
     {
+        // An optimizer owns deliberate stop/start transitions. Recovery must not
+        // race it and spawn another WinDivert filter.
+        if (Volatile.Read(ref _optimizerRunning) != 0) return;
         if (Interlocked.Exchange(ref _recovering, 1) != 0) return;
         try
         {
             await Task.Delay(1000).ConfigureAwait(false);
+            if (Volatile.Read(ref _optimizerRunning) != 0) return;
             var state = await _stateStore.LoadAsync().ConfigureAwait(false);
             if (state is null) return;
 

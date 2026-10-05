@@ -95,8 +95,8 @@
     <sys:String x:Key="EngineChoice">Движок</sys:String>
     <sys:String x:Key="EngineAutomatic">Автоматически</sys:String>
     <sys:String x:Key="EngineClassic">Классический</sys:String>
-    <sys:String x:Key="EngineNextGen">Новое поколение</sys:String>
-    <sys:String x:Key="EngineNew">Новый</sys:String>
+    <sys:String x:Key="EngineNextGen">Новое поколение — экспериментальный</sys:String>
+    <sys:String x:Key="EngineNew">Новый — экспериментальный</sys:String>
     <sys:String x:Key="EngineRestartRequired">Для смены движка требуется перезапуск обхода. Перезапустить сейчас?</sys:String>
     <sys:String x:Key="RawEngineCommand">Команда движка</sys:String>
     <sys:String x:Key="Mode">Режим</sys:String>
